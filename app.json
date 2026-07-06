@@ -46,19 +46,6 @@
       "expo-secure-store",
       "expo-av",
       [
-        "expo-build-properties",
-        {
-          "android": {
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35,
-            "minSdkVersion": 26
-          },
-          "ios": {
-            "deploymentTarget": "15.1"
-          }
-        }
-      ],
-      [
         "expo-image-picker",
         {
           "photosPermission": "Pour partager des photos dans notre bulle",
