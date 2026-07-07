@@ -1,5 +1,6 @@
 // ============================================================
-// Interface d'enregistrement vocal — overlay au-dessus du chat
+// Enregistrement vocal premium — animations amplitude
+// Design Burgundy & Gold, SVG icons
 // ============================================================
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import Animated, {
@@ -12,6 +13,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useEffect } from 'react';
 import { colors, borderRadius, spacing, typography } from '../../constants/theme';
+import { ArrowUpIcon, StopIcon } from '../Icons';
 
 interface VoiceRecorderProps {
   durationMs: number;
@@ -22,7 +24,7 @@ interface VoiceRecorderProps {
 }
 
 // ==========================================
-// COMPOSANTS INTERNES (externalisés)
+// COMPOSANTS INTERNES
 // ==========================================
 
 function RecordDot() {
@@ -70,7 +72,7 @@ function AmplitudeBars() {
 }
 
 // ==========================================
-// MAIN COMPOSANT
+// MAIN
 // ==========================================
 
 function formatTime(ms: number): string {
@@ -94,7 +96,7 @@ export function VoiceRecorder({
       style={styles.container}
     >
       {/* Annuler */}
-      <TouchableOpacity onPress={onCancel} style={styles.actionButton}>
+      <TouchableOpacity onPress={onCancel} style={styles.actionButton} activeOpacity={0.7}>
         <Text style={styles.cancelText}>Annuler</Text>
       </TouchableOpacity>
 
@@ -114,12 +116,12 @@ export function VoiceRecorder({
 
       {/* Stop / Send */}
       {isRecording ? (
-        <TouchableOpacity onPress={onStop} style={styles.stopButton}>
-          <View style={styles.stopIcon} />
+        <TouchableOpacity onPress={onStop} style={styles.stopButton} activeOpacity={0.8}>
+          <StopIcon size={18} color="#FAFAF9" />
         </TouchableOpacity>
       ) : (
-        <TouchableOpacity onPress={onSend} style={styles.sendButton}>
-          <Text style={styles.sendIcon}>↑</Text>
+        <TouchableOpacity onPress={onSend} style={styles.sendButton} activeOpacity={0.8}>
+          <ArrowUpIcon size={20} color="#FAFAF9" />
         </TouchableOpacity>
       )}
     </Animated.View>
@@ -159,12 +161,12 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: colors.callRed,
+    backgroundColor: colors.error,
   },
   recLabel: {
     fontSize: 11,
     fontWeight: '600',
-    color: colors.callRed,
+    color: colors.error,
     letterSpacing: 1,
   },
   amplitudeContainer: {
@@ -187,15 +189,14 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: colors.callRed,
+    backgroundColor: colors.error,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  stopIcon: {
-    width: 16,
-    height: 16,
-    borderRadius: 3,
-    backgroundColor: '#fff',
+    shadowColor: colors.error,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 6,
   },
   sendButton: {
     width: 44,
@@ -204,9 +205,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  sendIcon: {
-    fontSize: 20,
-    color: '#fff',
+    shadowColor: colors.glowBurgundy,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 6,
   },
 });

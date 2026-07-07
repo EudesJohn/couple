@@ -1,5 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
+  // Forcer 'class' pour éviter l'erreur web "Cannot manually set color scheme"
+  darkMode: 'class',
   content: [
     './app/**/*.{js,jsx,ts,tsx}',
     './src/**/*.{js,jsx,ts,tsx}',
@@ -29,4 +31,6 @@ module.exports = {
     },
   },
   plugins: [],
+  // Forcer 'class' pour désactiver le mode 'media' par défaut de NativeWind
+  safari: { darkMode: 'class' },
 };

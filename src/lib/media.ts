@@ -1,5 +1,6 @@
 // ============================================================
-// Service Média — upload to Supabase Storage + helpers
+// Service Média — upload to Supabase Storage + compression
+// Approche React Native native (sans Blob ArrayBuffer)
 // ============================================================
 import { supabase } from './supabase';
 import * as Crypto from 'expo-crypto';
@@ -34,6 +35,25 @@ function mimeToExt(mime: string): string {
   return map[mime] ?? 'bin';
 }
 
+// ==========================================
+// COMPRESSION D'IMAGE
+// ==========================================
+export async function compressImage(uri: string): Promise<string> {
+  try {
+    const { manipulateAsync, SaveFormat } = await import('expo-image-manipulator');
+    const result = await manipulateAsync(
+      uri,
+      [{ resize: { width: 1200 } }],
+      { compress: 0.8, format: SaveFormat.JPEG }
+    );
+    return result.uri;
+  } catch (err) {
+    // Si la compression échoue, on retourne l'URI original
+    console.warn('Compression image impossible, utilisation originale:', err);
+    return uri;
+  }
+}
+
 // Uploader un fichier depuis un URI local vers Supabase Storage
 export async function uploadMedia(
   bucket: keyof typeof BUCKETS,
@@ -44,13 +64,14 @@ export async function uploadMedia(
   const fileName = generateFileName(ext);
   const filePath = `${bucket}/${fileName}`;
 
-  // Lire le fichier depuis l'URI locale
-  const response = await fetch(uri);
-  const blob = await response.blob();
-
+  // En React Native, on passe un objet avec `uri` au lieu d'un Blob
   const { data, error } = await supabase.storage
     .from(BUCKETS[bucket])
-    .upload(filePath, blob, {
+    .upload(filePath, {
+      uri,
+      type: mimeType,
+      name: fileName,
+    } as any, {
       contentType: mimeType,
       cacheControl: '3600',
     });

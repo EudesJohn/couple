@@ -3,6 +3,7 @@
 // ============================================================
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { router } from 'expo-router';
+import { supabase } from '../lib/supabase';
 import {
   isPinSet,
   isSetupDone,
@@ -39,8 +40,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     availableTypes: [] as BiometricType[],
   });
 
-  // Vérifier l'état au montage
+  // Vérifier l'état au montage + connexion Supabase anonyme
   const checkAuth = useCallback(async () => {
+    // 1. Connexion anonyme Supabase (nécessaire pour RLS Storage/DB)
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        await supabase.auth.signInAnonymously();
+      }
+    } catch (err) {
+      console.warn('Supabase anon sign-in skipped:', err);
+    }
+
+    // 2. État PIN / biométrie
     const pinExists = await isPinSet();
     const setupDone = await isSetupDone();
     const prefs = await getBiometricPrefs();

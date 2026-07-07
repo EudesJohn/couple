@@ -46,6 +46,27 @@
       "expo-secure-store",
       "expo-av",
       [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "16.4"
+          },
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35,
+            "buildToolsVersion": "35.0.0",
+            "minSdkVersion": 26
+          }
+        }
+      ],
+      "expo-sqlite",
+      [
+        "expo-notifications",
+        {
+          "color": "#7C2D12"
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Pour partager des photos dans notre bulle",
@@ -57,7 +78,7 @@
         {
           "faceIDPermission": "Pour déverrouiller l'app avec ton visage"
         }
-      ]
+      ],
     ],
     "extra": {
       "router": {

@@ -1,11 +1,18 @@
 // ============================================================
-// ChatInput — Texte + Galerie/Caméra + Notes vocales
+// ChatInput premium — Texte, médias, notes vocales, Reply Preview
+// SVG icons, MediaPickerSheet, animations spring
+// Design Burgundy & Gold
 // ============================================================
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActionSheetIOS, Platform } from 'react-native';
+import { View, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
 import { useState, useCallback } from 'react';
-import { colors, borderRadius, spacing, typography } from '../../constants/theme';
+import Animated, { useAnimatedStyle, withSpring, useSharedValue } from 'react-native-reanimated';
+import { colors, borderRadius, spacing } from '../../constants/theme';
 import { VoiceRecorder } from '../media/VoiceRecorder';
+import { MediaPickerSheet } from '../media/MediaPickerSheet';
+import { ReplyPreview } from './ReplyPreview';
 import { useVoiceNotes } from '../../hooks/useVoiceNotes';
+import { PlusIcon, MicIcon, ArrowUpIcon } from '../Icons';
+import type { MessageWithDetails } from '../../types/database';
 
 interface ChatInputProps {
   onSendText: (text: string) => void;
@@ -14,6 +21,41 @@ interface ChatInputProps {
   onTakePhoto: () => void;
   onSendVideo: () => void;
   onTypingChange?: (isTyping: boolean) => void;
+  replyTo?: MessageWithDetails | null;
+  onCancelReply?: () => void;
+}
+
+// ==========================================
+// BOUTON ICÔNE AVEC ANIMATION DE SCALE
+// ==========================================
+function AnimatedIconBtn({
+  onPress,
+  children,
+  style,
+  disabled,
+}: {
+  onPress: () => void;
+  children: React.ReactNode;
+  style?: any;
+  disabled?: boolean;
+}) {
+  const scale = useSharedValue(1);
+  const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+
+  return (
+    <Animated.View style={animStyle}>
+      <TouchableOpacity
+        onPress={onPress}
+        onPressIn={() => { scale.value = withSpring(0.88); }}
+        onPressOut={() => { scale.value = withSpring(1); }}
+        activeOpacity={1}
+        disabled={disabled}
+        style={style}
+      >
+        {children}
+      </TouchableOpacity>
+    </Animated.View>
+  );
 }
 
 export function ChatInput({
@@ -23,8 +65,13 @@ export function ChatInput({
   onTakePhoto,
   onSendVideo,
   onTypingChange,
+  replyTo,
+  onCancelReply,
 }: ChatInputProps) {
   const [text, setText] = useState('');
+  const [mediaSheetVisible, setMediaSheetVisible] = useState(false);
+  const plusRotation = useSharedValue(0);
+
   const {
     recordingState,
     recordingDurationMs,
@@ -39,6 +86,10 @@ export function ChatInput({
   const isRecording = recordingState === 'recording';
   const isRecordStopped = recordingState === 'stopped';
   const showRecorder = isRecording || isRecordStopped;
+
+  const plusAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${plusRotation.value}deg` }],
+  }));
 
   const handleChangeText = useCallback(
     (value: string) => {
@@ -56,32 +107,17 @@ export function ChatInput({
   };
 
   // ==========================================
-  // MEDIA — Action sheet (caméra / galerie)
+  // MEDIA — Ouverture du bottom sheet
   // ==========================================
   const handleMediaPress = useCallback(() => {
-    const options = ['📸 Photo', '🖼 Galerie', '🎬 Vidéo', 'Annuler'];
-    const cancelIndex = 3;
+    plusRotation.value = withSpring(45);
+    setMediaSheetVisible(true);
+  }, []);
 
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        { options, cancelButtonIndex: cancelIndex },
-        (index) => {
-          if (index === 0) onTakePhoto();
-          else if (index === 1) onSendImage();
-          else if (index === 2) onSendVideo();
-        }
-      );
-    } else {
-      // Android : simple menu avec Alert
-      const { Alert: RNAlert } = require('react-native');
-      RNAlert.alert('Ajouter un média', '', [
-        { text: '📸 Photo', onPress: onTakePhoto },
-        { text: '🖼 Galerie', onPress: onSendImage },
-        { text: '🎬 Vidéo', onPress: onSendVideo },
-        { text: 'Annuler', style: 'cancel' },
-      ]);
-    }
-  }, [onSendImage, onTakePhoto, onSendVideo]);
+  const handleCloseMedia = useCallback(() => {
+    plusRotation.value = withSpring(0);
+    setMediaSheetVisible(false);
+  }, []);
 
   // ==========================================
   // VOIX
@@ -127,48 +163,69 @@ export function ChatInput({
     );
   }
 
-  return (
-    <View style={styles.container}>
-      {/* Media (galerie/caméra) */}
-      <TouchableOpacity onPress={handleMediaPress} style={styles.iconButton}>
-        <Text style={styles.iconText}>+</Text>
-      </TouchableOpacity>
+  const hasText = text.trim().length > 0;
 
-      {/* Champ de texte */}
-      <View style={styles.inputWrapper}>
-        <TextInput
-          value={text}
-          onChangeText={handleChangeText}
-          placeholder="Écris quelque chose…"
-          placeholderTextColor={colors.textTertiary}
-          multiline
-          maxLength={2000}
-          style={styles.textInput}
-        />
+  return (
+    <>
+      {/* Reply Preview bar */}
+      {replyTo && onCancelReply && (
+        <ReplyPreview replyTo={replyTo} onCancel={onCancelReply} />
+      )}
+
+      <View style={styles.container}>
+        {/* Media (galerie/caméra) — bouton animé */}
+        <AnimatedIconBtn onPress={handleMediaPress}>
+          <Animated.View
+            style={[
+              styles.plusButton,
+              mediaSheetVisible && { backgroundColor: colors.primary },
+              plusAnimStyle,
+            ]}
+          >
+            <PlusIcon size={20} color={mediaSheetVisible ? '#FAFAF9' : colors.textSecondary} />
+          </Animated.View>
+        </AnimatedIconBtn>
+
+        {/* Champ de texte */}
+        <View style={styles.inputWrapper}>
+          <TextInput
+            value={text}
+            onChangeText={handleChangeText}
+            placeholder={replyTo ? 'Ecris ta réponse…' : 'Écris quelque chose…'}
+            placeholderTextColor={colors.textTertiary}
+            multiline
+            maxLength={2000}
+            style={styles.textInput}
+          />
+        </View>
+
+        {/* Micro — note vocale */}
+        <AnimatedIconBtn onPress={handleMicPress} style={[styles.iconButton, { backgroundColor: colors.surfaceAlt }]}>
+          <MicIcon size={18} color={colors.textSecondary} />
+        </AnimatedIconBtn>
+
+        {/* Envoi texte */}
+        <AnimatedIconBtn
+          onPress={handleSendText}
+          disabled={!hasText}
+          style={[
+            styles.sendButton,
+            { backgroundColor: hasText ? colors.primary : colors.surfaceAlt },
+          ]}
+        >
+          <ArrowUpIcon size={18} color={hasText ? '#FAFAF9' : colors.textTertiary} />
+        </AnimatedIconBtn>
       </View>
 
-      {/* Micro — note vocale */}
-      <TouchableOpacity
-        onPress={handleMicPress}
-        style={[styles.iconButton, { backgroundColor: colors.surfaceAlt }]}
-      >
-        <View style={styles.micIcon} />
-      </TouchableOpacity>
-
-      {/* Envoi texte */}
-      <TouchableOpacity
-        onPress={handleSendText}
-        disabled={!text.trim()}
-        style={[
-          styles.sendButton,
-          { backgroundColor: text.trim() ? colors.primary : colors.surfaceAlt },
-        ]}
-      >
-        <Text style={[styles.sendArrow, { color: text.trim() ? '#fff' : colors.textTertiary }]}>
-          ↑
-        </Text>
-      </TouchableOpacity>
-    </View>
+      {/* Media Picker Sheet */}
+      <MediaPickerSheet
+        visible={mediaSheetVisible}
+        onClose={handleCloseMedia}
+        onTakePhoto={onTakePhoto}
+        onPickImage={onSendImage}
+        onPickVideo={onSendVideo}
+      />
+    </>
   );
 }
 
@@ -183,6 +240,17 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     gap: spacing.sm,
   },
+  plusButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.surfaceAlt,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 2,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+  },
   iconButton: {
     width: 36,
     height: 36,
@@ -192,20 +260,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 2,
   },
-  iconText: {
-    fontSize: 22,
-    color: colors.textSecondary,
-    lineHeight: 24,
-  },
-  micIcon: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: colors.primary,
-  },
   inputWrapper: {
     flex: 1,
-    backgroundColor: colors.inputBackground,
+    backgroundColor: colors.surfaceAlt,
     borderRadius: borderRadius.lg,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
@@ -225,9 +282,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 2,
-  },
-  sendArrow: {
-    fontSize: 18,
-    fontWeight: '600',
   },
 });

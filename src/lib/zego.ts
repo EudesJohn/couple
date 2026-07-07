@@ -1,56 +1,89 @@
 // ============================================================
 // ZegoCloud — Moteur audio/vidéo pour les appels
-// API v3.22.0
+// Chargement dynamique : ne crash PAS dans Expo Go
 // ============================================================
-import ZegoExpressEngine, { ZegoScenario, ZegoViewMode } from 'zego-express-engine-reactnative';
-import type { ZegoView, ZegoStream } from 'zego-express-engine-reactnative';
+
 import { config } from '../constants/config';
 
-let engine: ZegoExpressEngine | null = null;
-let previewView: ZegoView | undefined;
-let remoteView: ZegoView | undefined;
+// Constantes Zego (définies localement, pas besoin du natif)
+export const ZegoViewMode = {
+  AspectFill: 0,
+  AspectFit: 1,
+} as const;
 
-// Callbacks externes
-let onRemoteStreamUpdate: ((streams: ZegoStream[], added: boolean) => void) | null = null;
+let engine: any = null;
+let previewView: any = undefined;
+let remoteView: any = undefined;
+let onRemoteStreamUpdate: ((streams: any[], added: boolean) => void) | null = null;
+
+// Module natif mis en cache après chargement
+let ZegoModule: any = null;
 
 interface CallUser {
   userID: string;
   userName: string;
 }
 
-export type { ZegoStream };
-export { ZegoViewMode };
+export type ZegoStream = any;
+
+// Charge le module natif Zego UNIQUEMENT quand on en a besoin
+async function getZegoModule() {
+  if (ZegoModule) return ZegoModule;
+  try {
+    ZegoModule = await import('zego-express-engine-reactnative');
+    return ZegoModule;
+  } catch {
+    console.warn('[Zego] Module natif non disponible (Expo Go)');
+    return null;
+  }
+}
 
 // Initialiser le moteur (une seule fois)
-export async function getEngine(): Promise<ZegoExpressEngine> {
-  if (!engine) {
-    engine = await ZegoExpressEngine.createEngineWithProfile({
-      appID: config.zego.appID,
-      appSign: config.zego.appSign,
-      scenario: ZegoScenario.StandardVideoCall,
-    });
+export async function getEngine(): Promise<any> {
+  if (engine) return engine;
 
-    // Écouter les événements de flux distants
-    engine.on('roomStreamUpdate', (roomID: string, updateType: number, streamList: ZegoStream[]) => {
-      const added = updateType === 0; // ZegoUpdateType.Add = 0
-      onRemoteStreamUpdate?.(streamList, added);
-    });
+  const Zego = await getZegoModule();
+  if (!Zego) {
+    throw new Error('[Zego] Module non disponible sur cette plateforme');
   }
+
+  engine = await Zego.default.createEngineWithProfile({
+    appID: config.zego.appID,
+    appSign: config.zego.appSign,
+    scenario: Zego.ZegoScenario.StandardVideoCall,
+  });
+
+  // Écouter les événements de flux distants
+  engine.on('roomStreamUpdate', (roomID: string, updateType: number, streamList: any[]) => {
+    const added = updateType === 0; // ZegoUpdateType.Add = 0
+    onRemoteStreamUpdate?.(streamList, added);
+  });
+
   return engine;
 }
 
+// Vérifier si Zego est disponible (sans lancer d'erreur)
+export async function isZegoAvailable(): Promise<boolean> {
+  try {
+    const Zego = await getZegoModule();
+    return Zego !== null;
+  } catch {
+    return false;
+  }
+}
+
 // Enregistrer les vues natives
-export function setPreviewView(view: ZegoView | undefined): void {
+export function setPreviewView(view: any | undefined): void {
   previewView = view;
 }
 
-export function setRemoteView(view: ZegoView | undefined): void {
+export function setRemoteView(view: any | undefined): void {
   remoteView = view;
 }
 
 // Callback pour les flux distants
 export function setOnRemoteStreamUpdate(
-  cb: ((streams: ZegoStream[], added: boolean) => void) | null
+  cb: ((streams: any[], added: boolean) => void) | null
 ): void {
   onRemoteStreamUpdate = cb;
 }
@@ -120,9 +153,11 @@ export async function muteMicrophone(muted: boolean): Promise<void> {
 export async function destroy(): Promise<void> {
   if (engine) {
     onRemoteStreamUpdate = null;
-    await ZegoExpressEngine.destroyEngine();
+    const Zego = ZegoModule;
+    await Zego?.default?.destroyEngine?.();
     engine = null;
     previewView = undefined;
     remoteView = undefined;
+    ZegoModule = null;
   }
 }

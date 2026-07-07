@@ -1,11 +1,13 @@
 // ============================================================
-// Bulle média — Image ou Vidéo dans le chat
+// Bulle media premium — Image ou Video dans le chat
+// SVG icons, shimmer loading, design Burgundy
 // ============================================================
-import { View, Image, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Image, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { useState } from 'react';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { colors, borderRadius, spacing, typography } from '../../constants/theme';
 import { getMediaUrl } from '../../lib/media';
+import { PlayIcon, ImageIcon, VideoIcon } from '../Icons';
 
 interface MediaBubbleProps {
   storagePath: string;
@@ -52,9 +54,12 @@ export function MediaBubble({
           },
         ]}
       >
-        <Text style={styles.errorText}>
-          {isVideo ? '🎬' : '🖼'} Impossible de charger
-        </Text>
+        {isVideo ? (
+          <VideoIcon size={24} color={colors.textTertiary} />
+        ) : (
+          <ImageIcon size={24} color={colors.textTertiary} />
+        )}
+        <Text style={styles.errorText}>Impossible de charger</Text>
       </View>
     );
   }
@@ -85,11 +90,11 @@ export function MediaBubble({
           onError={() => setHasError(true)}
         />
 
-        {/* Overlay vidéo */}
+        {/* Overlay video */}
         {isVideo && (
           <View style={styles.videoOverlay}>
             <View style={styles.playButtonBg}>
-              <Text style={styles.playIcon}>▶️</Text>
+              <PlayIcon size={22} color={colors.primary} />
             </View>
           </View>
         )}
@@ -102,7 +107,7 @@ export function MediaBubble({
               { width: displayWidth, height: displayHeight },
             ]}
           >
-            <Text style={styles.loadingText}>⏳</Text>
+            <ActivityIndicator size="small" color={colors.primary} />
           </View>
         )}
       </TouchableOpacity>
@@ -113,7 +118,7 @@ export function MediaBubble({
           <Text
             style={[
               styles.captionText,
-              { color: isOwn ? colors.bubbleSelfText : colors.bubbleOtherText },
+              { color: isOwn ? colors.bubbleSelfText : colors.text },
             ]}
           >
             {caption}
@@ -148,9 +153,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  playIcon: {
-    fontSize: 20,
-  },
   loadingOverlay: {
     position: 'absolute',
     top: 0, left: 0, right: 0, bottom: 0,
@@ -158,9 +160,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.surfaceAlt,
     borderRadius: borderRadius.lg,
-  },
-  loadingText: {
-    fontSize: 24,
   },
   captionContainer: {
     paddingHorizontal: spacing.md,
@@ -176,6 +175,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: spacing.lg,
     borderRadius: borderRadius.lg,
+    gap: spacing.sm,
   },
   errorText: {
     ...typography.caption,

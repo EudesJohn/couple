@@ -32,7 +32,7 @@ export function useMediaPicker(): UseMediaPickerReturn {
     if (status !== 'granted') {
       Alert.alert(
         'Permission requise',
-        'Nous avons besoin d\'accéder à ta galerie pour partager des photos 💕'
+        'Nous avons besoin d\'accéder à ta galerie pour partager des photos'
       );
       return false;
     }
@@ -44,7 +44,7 @@ export function useMediaPicker(): UseMediaPickerReturn {
     if (status !== 'granted') {
       Alert.alert(
         'Permission requise',
-        'Nous avons besoin d\'accéder à ta caméra pour prendre des photos 📸'
+        'Nous avons besoin d\'accéder à ta caméra pour prendre des photos'
       );
       return false;
     }

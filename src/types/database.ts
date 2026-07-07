@@ -47,6 +47,7 @@ export interface Attachment {
   id: string;
   message_id: string;
   storage_path: string;
+  local_path?: string | null;
   mime_type: string;
   file_size: number | null;
   duration_ms: number | null;

@@ -1,116 +1,138 @@
 // ============================================================
-// Layout du Chat — header avec présence + bouton d'appel
+// Layout du Chat — header premium avec présence + appels
+// Design Burgundy & Gold, animations fluides
 // ============================================================
-import { View, Text, TouchableOpacity, ActionSheetIOS, Platform, Alert } from 'react-native';
-import { Stack } from 'expo-router';
-import { colors, typography } from '../../src/constants/theme';
+import { View, Text, TouchableOpacity } from 'react-native';
+import { Stack, router } from 'expo-router';
+import { useState } from 'react';
+import { colors, typography, spacing, borderRadius } from '../../src/constants/theme';
 import { usePresence } from '../../src/hooks/usePresence';
 import { useCall } from '../../src/hooks/useCall';
+import { PhoneIcon, VideoIcon, SettingsIcon, HeartFilledIcon } from '../../src/components/Icons';
+import { CallTypeSheet } from '../../src/components/call/CallTypeSheet';
 
-const PARTNER_NAME = 'Ma chérie 💕';
+const PARTNER_NAME = 'Ma chérie';
 
 function ChatHeader() {
   const { isPartnerOnline, partnerPresence } = usePresence();
   const { startCall } = useCall();
   const isTyping = partnerPresence?.is_typing ?? false;
+  const [callSheetVisible, setCallSheetVisible] = useState(false);
 
   const handleCallPress = () => {
-    const options = ['📞 Appel audio', '📹 Appel vidéo', 'Annuler'];
-
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options,
-          cancelButtonIndex: 2,
-          title: 'Appeler',
-        },
-        (index) => {
-          if (index === 0) startCall('audio');
-          if (index === 1) startCall('video');
-        }
-      );
-    } else {
-      Alert.alert('Appeler', '', [
-        { text: '📞 Appel audio', onPress: () => startCall('audio') },
-        { text: '📹 Appel vidéo', onPress: () => startCall('video') },
-        { text: 'Annuler', style: 'cancel' },
-      ]);
-    }
+    setCallSheetVisible(true);
   };
 
   return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: 16,
-        paddingVertical: 10,
-        backgroundColor: colors.surface,
-        borderBottomWidth: 1,
-        borderBottomColor: colors.border,
-      }}
-    >
-      {/* Infos partenaire */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-        <View style={{ position: 'relative' }}>
+    <>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingHorizontal: 20,
+          paddingVertical: 12,
+          backgroundColor: colors.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.borderLight,
+        }}
+      >
+        {/* Partenaire */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          {/* Avatar */}
           <View
             style={{
-              width: 36,
-              height: 36,
-              borderRadius: 18,
-              backgroundColor: colors.secondary,
+              width: 40,
+              height: 40,
+              borderRadius: 20,
+              backgroundColor: colors.surfaceDim,
+              justifyContent: 'center',
+              alignItems: 'center',
+              position: 'relative',
+            }}
+          >
+            <HeartFilledIcon size={18} color={colors.accent} />
+            <View
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                right: 0,
+                width: 12,
+                height: 12,
+                borderRadius: 6,
+                backgroundColor: isPartnerOnline ? colors.online : colors.textTertiary,
+                borderWidth: 2.5,
+                borderColor: colors.surface,
+              }}
+            />
+          </View>
+
+          {/* Infos */}
+          <View>
+            <Text
+              style={{
+                fontSize: 17,
+                fontWeight: '600',
+                color: colors.text,
+                letterSpacing: -0.3,
+              }}
+            >
+              {PARTNER_NAME}
+            </Text>
+            <Text
+              style={{
+                fontSize: 12,
+                fontWeight: '500',
+                color: isPartnerOnline ? colors.online : colors.textTertiary,
+              }}
+            >
+              {isTyping ? 'Écrit...' : isPartnerOnline ? 'En ligne' : 'Hors ligne'}
+            </Text>
+          </View>
+        </View>
+
+        {/* Actions */}
+        <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+          <TouchableOpacity
+            onPress={() => router.push('/settings')}
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 19,
+              backgroundColor: colors.surfaceAlt,
               justifyContent: 'center',
               alignItems: 'center',
             }}
+            activeOpacity={0.7}
           >
-            <Text style={{ fontSize: 18 }}>💕</Text>
-          </View>
-          <View
-            style={{
-              position: 'absolute',
-              bottom: 0,
-              right: 0,
-              width: 10,
-              height: 10,
-              borderRadius: 5,
-              backgroundColor: isPartnerOnline ? colors.online : colors.textTertiary,
-              borderWidth: 2,
-              borderColor: colors.surface,
-            }}
-          />
-        </View>
+            <SettingsIcon size={18} color={colors.textSecondary} />
+          </TouchableOpacity>
 
-        <View>
-          <Text style={{ ...typography.subheading, fontSize: 17, color: colors.text }}>
-            {PARTNER_NAME}
-          </Text>
-          <Text
+          <TouchableOpacity
+            onPress={handleCallPress}
             style={{
-              fontSize: 12,
-              color: isPartnerOnline ? colors.online : colors.textTertiary,
+              width: 38,
+              height: 38,
+              borderRadius: 19,
+              backgroundColor: colors.primary,
+              justifyContent: 'center',
+              alignItems: 'center',
             }}
+            activeOpacity={0.7}
           >
-            {isTyping ? 'Écrit…' : isPartnerOnline ? 'En ligne' : 'Hors ligne'}
-          </Text>
+            <PhoneIcon size={16} color="#FAFAF9" />
+          </TouchableOpacity>
         </View>
       </View>
 
-      {/* Bouton d'appel */}
-      <TouchableOpacity
-        onPress={handleCallPress}
-        style={{
-          width: 38,
-          height: 38,
-          borderRadius: 19,
-          backgroundColor: colors.surfaceAlt,
-          justifyContent: 'center',
-          alignItems: 'center',
-        }}
-      >
-        <Text style={{ fontSize: 18 }}>📞</Text>
-      </TouchableOpacity>
-    </View>
+      {/* Call Type Sheet */}
+      <CallTypeSheet
+        visible={callSheetVisible}
+        onClose={() => setCallSheetVisible(false)}
+        onStartAudioCall={() => startCall('audio')}
+        onStartVideoCall={() => startCall('video')}
+      />
+    </>
   );
 }
 

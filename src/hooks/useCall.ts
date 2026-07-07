@@ -8,6 +8,7 @@ import { getCurrentProfile } from '../lib/supabase';
 import { joinRoom, leaveRoom, startPublish, stopPublish, toggleSpeaker, muteMicrophone, startPlayingStream, stopPlayingStream, setOnRemoteStreamUpdate } from '../lib/zego';
 import type { Call, CallType } from '../types/database';
 import { router } from 'expo-router';
+import { notifyIncomingCall, clearBadge } from './useNotifications';
 
 type CallStateType = 'idle' | 'calling' | 'ringing' | 'connecting' | 'connected' | 'ended';
 
@@ -89,10 +90,11 @@ export function useCall(): UseCallReturn {
           const me = await getCurrentProfile();
           if (!me || call.caller_id === me.id) return; // c'est nous qui appelons
 
-          // Appel entrant !
+          // Appel entrant — notification + état
           setIncomingCall(call);
           setCallType(call.type);
           setCallState('ringing');
+          notifyIncomingCall(partnerRef.current?.name || 'Partenaire', call.type);
         }
       )
       .on(
@@ -153,6 +155,7 @@ export function useCall(): UseCallReturn {
     } catch (err) {
       console.error('Erreur Zego:', err);
       setCallState('ended');
+      setTimeout(() => setCallState('idle'), 2000);
     }
   }, [startCallTimer]);
 

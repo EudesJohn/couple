@@ -1,21 +1,27 @@
 // ============================================================
-// 🔐 Écran de Verrouillage — PIN + Biométrie + Visage
-// Style iOS / iPhone — romantique et épuré
+// 🔐 Écran de Verrouillage — Design Premium Burgundy & Gold
+// Animations fluides, pas d'emojis, boutons stylisés
 // ============================================================
 import { useState, useEffect, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from 'react-native';
 import { router } from 'expo-router';
 import Animated, {
   useAnimatedStyle,
   withSpring,
   withSequence,
   withTiming,
+  withRepeat,
   useSharedValue,
+  FadeInDown,
+  FadeIn,
 } from 'react-native-reanimated';
-import { colors, typography, spacing } from '../src/constants/theme';
+import { colors, typography, spacing, borderRadius } from '../src/constants/theme';
 import { useAuth } from '../src/hooks/useAuth';
+import { LockIcon, HeartFilledIcon } from '../src/components/Icons';
 
 const PIN_LENGTH = 4;
+const { width } = Dimensions.get('window');
+const KEY_SIZE = (width - 64 - 40) / 3;
 
 const NUMPAD_KEYS = [
   ['1', '2', '3'],
@@ -25,15 +31,26 @@ const NUMPAD_KEYS = [
 ];
 
 export default function LockScreen() {
-  const { isFirstLaunch, unlockWithPin, unlockWithBiometrics, biometricPrefs, hardwareBiometrics } =
-    useAuth();
+  const { isFirstLaunch, unlockWithPin, unlockWithBiometrics, biometricPrefs, hardwareBiometrics } = useAuth();
 
   const [pin, setPin] = useState('');
   const [isError, setIsError] = useState(false);
   const [attempts, setAttempts] = useState(0);
 
   const shakeAnim = useSharedValue(0);
-  const dotsAnim = useSharedValue(1);
+  const glowOpacity = useSharedValue(0.3);
+
+  // Animation de glow pulsante
+  useEffect(() => {
+    glowOpacity.value = withRepeat(
+      withSequence(
+        withTiming(0.6, { duration: 1500 }),
+        withTiming(0.3, { duration: 1500 })
+      ),
+      -1,
+      true
+    );
+  }, []);
 
   // Rediriger si premier lancement
   useEffect(() => {
@@ -42,33 +59,26 @@ export default function LockScreen() {
     }
   }, [isFirstLaunch]);
 
-  // Shake animation
   const shakeStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: shakeAnim.value }],
   }));
 
-  // Dots animation
-  const dotStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: dotsAnim.value }],
+  const glowStyle = useAnimatedStyle(() => ({
+    opacity: glowOpacity.value,
   }));
 
   const triggerShake = useCallback(() => {
     setIsError(true);
     shakeAnim.value = withSequence(
-      withTiming(-10, { duration: 50 }),
-      withTiming(10, { duration: 50 }),
-      withTiming(-10, { duration: 50 }),
-      withTiming(10, { duration: 50 }),
-      withTiming(0, { duration: 50 })
-    );
-    dotsAnim.value = withSequence(
-      withSpring(1.3),
-      withSpring(1)
+      withTiming(-12, { duration: 40 }),
+      withTiming(12, { duration: 40 }),
+      withTiming(-12, { duration: 40 }),
+      withTiming(12, { duration: 40 }),
+      withTiming(0, { duration: 40 })
     );
     setTimeout(() => setIsError(false), 500);
   }, []);
 
-  // Taper un chiffre
   const handleKeyPress = useCallback(
     async (key: string) => {
       if (key === '⌫') {
@@ -82,88 +92,86 @@ export default function LockScreen() {
       const newPin = pin + key;
       setPin(newPin);
 
-      // Vérifier automatiquement à 4 chiffres
       if (newPin.length === PIN_LENGTH) {
         const valid = await unlockWithPin(newPin);
         if (valid) {
-          // ✅ Déverrouillé → animation puis redirection
-          dotsAnim.value = withSpring(1.5);
-          setTimeout(() => router.replace('/chat'), 300);
+          setTimeout(() => router.replace('/chat'), 350);
         } else {
-          // ❌ Mauvais PIN
           setAttempts((a) => a + 1);
           triggerShake();
           setTimeout(() => setPin(''), 400);
         }
       }
     },
-    [pin, unlockWithPin, attempts]
+    [pin, unlockWithPin]
   );
 
-  // Tentative biométrique automatique
   useEffect(() => {
     const tryBiometric = async () => {
       if (biometricPrefs.fingerprint || biometricPrefs.face) {
         await unlockWithBiometrics();
       }
     };
-
-    // Petit délai pour laisser l'UI se monter
     const timer = setTimeout(tryBiometric, 600);
     return () => clearTimeout(timer);
   }, []);
 
-  // Si premier lancement → on redirige (le layout fait le rendu)
   if (isFirstLaunch) return null;
 
-  const hasFingerprint = hardwareBiometrics.hasHardware && biometricPrefs.fingerprint;
-  const hasFace = hardwareBiometrics.hasHardware && biometricPrefs.face;
+  const hasBiometrics = hardwareBiometrics.hasHardware && (biometricPrefs.fingerprint || biometricPrefs.face);
 
   return (
     <View style={styles.container}>
-      {/* Branding */}
-      <View style={styles.branding}>
-        <Text style={styles.emoji}>💫</Text>
-        <Text style={styles.title}>Notre Bulle</Text>
-        <Text style={styles.subtitle}>Déverrouille pour nous rejoindre</Text>
+      {/* Fond décoratif */}
+      <View style={styles.decorativeTop}>
+        <View style={styles.glowCircle} />
       </View>
 
+      {/* Logo / Branding */}
+      <Animated.View entering={FadeInDown.duration(800).springify()} style={styles.branding}>
+        <View style={styles.logoContainer}>
+          <Animated.View style={[styles.glowRing, glowStyle]} />
+          <HeartFilledIcon size={48} color={colors.accent} />
+        </View>
+        <Text style={styles.title}>Notre Bulle</Text>
+        <Text style={styles.subtitle}>Déverrouille pour nous rejoindre</Text>
+      </Animated.View>
+
       {/* PIN Dots */}
-      <Animated.View style={[styles.dotsContainer, shakeStyle]}>
+      <Animated.View entering={FadeIn.duration(600).delay(200)} style={[styles.dotsContainer, shakeStyle]}>
         {Array.from({ length: PIN_LENGTH }).map((_, i) => (
-          <Animated.View
+          <View
             key={i}
             style={[
               styles.dot,
               i < pin.length && styles.dotFilled,
               isError && styles.dotError,
-              i === pin.length - 1 && i < pin.length && dotStyle,
             ]}
           />
         ))}
       </Animated.View>
 
       {/* Numpad */}
-      <View style={styles.numpad}>
+      <Animated.View entering={FadeInDown.duration(600).delay(400)} style={styles.numpad}>
         {NUMPAD_KEYS.map((row, rIdx) => (
           <View key={rIdx} style={styles.numpadRow}>
             {row.map((key) =>
               key === '' ? (
-                <View key="empty" style={styles.numpadKeyPlaceholder} />
+                <View key="empty" style={styles.keyPlaceholder} />
               ) : (
                 <TouchableOpacity
                   key={key}
                   onPress={() => handleKeyPress(key)}
-                  activeOpacity={0.6}
+                  activeOpacity={0.7}
                   style={[
-                    styles.numpadKey,
-                    key === '⌫' && styles.numpadKeySpecial,
+                    styles.numKey,
+                    key === '⌫' && styles.numKeySpecial,
                   ]}
                 >
                   <Text
                     style={[
-                      styles.numpadKeyText,
-                      key === '⌫' && styles.numpadKeyTextSpecial,
+                      styles.numKeyText,
+                      key === '⌫' && styles.numKeyTextSpecial,
                     ]}
                   >
                     {key === '⌫' ? '⌫' : key}
@@ -173,38 +181,26 @@ export default function LockScreen() {
             )}
           </View>
         ))}
-      </View>
+      </Animated.View>
 
-      {/* Biométrie — empreinte + visage */}
-      {(hasFingerprint || hasFace) && (
-        <View style={styles.biometricRow}>
-          {hasFace && (
-            <TouchableOpacity
-              style={styles.biometricButton}
-              onPress={() => unlockWithBiometrics()}
-            >
-              <Text style={styles.biometricIcon}>👤</Text>
-              <Text style={styles.biometricLabel}>Visage</Text>
-            </TouchableOpacity>
-          )}
-          {hasFingerprint && (
-            <TouchableOpacity
-              style={styles.biometricButton}
-              onPress={() => unlockWithBiometrics()}
-            >
-              <Text style={styles.biometricIcon}>👆</Text>
-              <Text style={styles.biometricLabel}>Empreinte</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+      {/* Biométrie */}
+      {hasBiometrics && (
+        <Animated.View entering={FadeIn.duration(600).delay(600)} style={styles.biometricContainer}>
+          <TouchableOpacity
+            style={styles.biometricButton}
+            onPress={() => unlockWithBiometrics()}
+            activeOpacity={0.7}
+          >
+            <LockIcon size={22} color={colors.primary} />
+            <Text style={styles.biometricText}>Déverrouillage biométrique</Text>
+          </TouchableOpacity>
+        </Animated.View>
       )}
 
-      {/* Tentatives restantes */}
+      {/* Tentatives */}
       {attempts > 0 && (
         <Text style={styles.attemptsText}>
-          Code incorrect · {3 - Math.min(attempts, 3)} tentative
-          {3 - Math.min(attempts, 3) > 1 ? 's' : ''} restante
-          {3 - Math.min(attempts, 3) <= 1 ? '' : 's'}
+          Code incorrect · {3 - Math.min(attempts, 3)} tentative{3 - Math.min(attempts, 3) > 1 ? 's' : ''} restante{3 - Math.min(attempts, 3) <= 1 ? '' : 's'}
         </Text>
       )}
     </View>
@@ -215,36 +211,68 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: 32,
   },
-
-  // Branding
+  decorativeTop: {
+    position: 'absolute',
+    top: -120,
+    left: -120,
+    right: -120,
+    height: 300,
+    overflow: 'hidden',
+  },
+  glowCircle: {
+    width: 400,
+    height: 400,
+    borderRadius: 200,
+    backgroundColor: colors.glowBurgundy,
+    alignSelf: 'center',
+    opacity: 0.5,
+  },
   branding: {
     alignItems: 'center',
     marginBottom: 48,
   },
-  emoji: {
-    fontSize: 64,
-    marginBottom: 12,
+  logoContainer: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    shadowColor: colors.shadowStrong,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 1,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  glowRing: {
+    position: 'absolute',
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    borderWidth: 2,
+    borderColor: colors.accent,
+    opacity: 0.3,
   },
   title: {
     ...typography.heading,
     color: colors.text,
-    marginBottom: 6,
+    marginBottom: 8,
   },
   subtitle: {
     ...typography.body,
     color: colors.textSecondary,
+    textAlign: 'center',
   },
-
-  // Dots
   dotsContainer: {
     flexDirection: 'row',
     gap: 16,
-    marginBottom: 48,
-    height: 24,
+    marginBottom: 44,
+    height: 16,
     alignItems: 'center',
   },
   dot: {
@@ -255,14 +283,17 @@ const styles = StyleSheet.create({
   },
   dotFilled: {
     backgroundColor: colors.primary,
+    shadowColor: colors.glowBurgundy,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 8,
+    elevation: 4,
   },
   dotError: {
     backgroundColor: colors.error,
   },
-
-  // Numpad
   numpad: {
-    gap: 16,
+    gap: 14,
     marginBottom: 32,
   },
   numpadRow: {
@@ -270,10 +301,10 @@ const styles = StyleSheet.create({
     gap: 20,
     justifyContent: 'center',
   },
-  numpadKey: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+  numKey: {
+    width: KEY_SIZE,
+    height: KEY_SIZE,
+    borderRadius: borderRadius.lg,
     backgroundColor: colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
@@ -283,48 +314,45 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
   },
-  numpadKeySpecial: {
+  numKeySpecial: {
     backgroundColor: 'transparent',
     shadowOpacity: 0,
     elevation: 0,
   },
-  numpadKeyPlaceholder: {
-    width: 76,
-    height: 76,
+  keyPlaceholder: {
+    width: KEY_SIZE,
+    height: KEY_SIZE,
   },
-  numpadKeyText: {
+  numKeyText: {
     fontSize: 28,
     fontWeight: '500',
     color: colors.text,
   },
-  numpadKeyTextSpecial: {
-    fontSize: 24,
+  numKeyTextSpecial: {
+    fontSize: 22,
     color: colors.textSecondary,
+    fontWeight: '400',
   },
-
-  // Biométrie
-  biometricRow: {
-    flexDirection: 'row',
-    gap: 24,
-    marginBottom: 32,
+  biometricContainer: {
+    alignItems: 'center',
   },
   biometricButton: {
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    padding: 16,
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl,
+    borderRadius: borderRadius.pill,
+    backgroundColor: colors.surfaceAlt,
   },
-  biometricIcon: {
-    fontSize: 32,
+  biometricText: {
+    ...typography.body,
+    color: colors.primary,
+    fontWeight: '500',
   },
-  biometricLabel: {
-    ...typography.caption,
-    color: colors.textSecondary,
-  },
-
-  // Erreur
   attemptsText: {
     ...typography.caption,
-    color: colors.textTertiary,
-    marginTop: 8,
+    color: colors.error,
+    marginTop: spacing.lg,
   },
 });

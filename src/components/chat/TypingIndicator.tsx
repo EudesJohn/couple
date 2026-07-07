@@ -1,4 +1,7 @@
-import { View, Text } from 'react-native';
+// ============================================================
+// Indicateur "écrit..." — design premium avec animation
+// ============================================================
+import { View, Text, StyleSheet } from 'react-native';
 import Animated, {
   useAnimatedStyle,
   withRepeat,
@@ -7,7 +10,7 @@ import Animated, {
   withDelay,
 } from 'react-native-reanimated';
 import { useEffect } from 'react';
-import { colors, borderRadius, spacing, typography } from '../../constants/theme';
+import { colors, spacing, borderRadius, typography } from '../../constants/theme';
 
 interface TypingIndicatorProps {
   name: string;
@@ -17,17 +20,17 @@ function Dot({ delay }: { delay: number }) {
   const opacity = useSharedValue(0.3);
 
   useEffect(() => {
-    opacity.value = withRepeat(
-      withDelay(
-        delay,
-        withTiming(1, { duration: 400 })
-      ),
-      -1,
-      true
+    opacity.value = withDelay(
+      delay,
+      withRepeat(
+        withTiming(1, { duration: 400 }),
+        -1,
+        true
+      )
     );
   }, []);
 
-  const animatedStyle = useAnimatedStyle(() => ({
+  const animStyle = useAnimatedStyle(() => ({
     opacity: opacity.value,
   }));
 
@@ -38,9 +41,9 @@ function Dot({ delay }: { delay: number }) {
           width: 7,
           height: 7,
           borderRadius: 3.5,
-          backgroundColor: colors.textTertiary,
+          backgroundColor: colors.primary,
         },
-        animatedStyle,
+        animStyle,
       ]}
     />
   );
@@ -48,31 +51,39 @@ function Dot({ delay }: { delay: number }) {
 
 export function TypingIndicator({ name }: TypingIndicatorProps) {
   return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-        gap: spacing.sm,
-      }}
-    >
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 3,
-          paddingHorizontal: spacing.lg,
-          paddingVertical: spacing.md,
-          backgroundColor: colors.bubbleOther,
-          borderRadius: borderRadius.lg,
-          borderBottomLeftRadius: borderRadius.sm,
-        }}
-      >
+    <View style={styles.container}>
+      <View style={styles.bubble}>
         <Dot delay={0} />
-        <Dot delay={200} />
-        <Dot delay={400} />
+        <Dot delay={150} />
+        <Dot delay={300} />
       </View>
+      <Text style={styles.text}>{name} écrit...</Text>
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xs,
+  },
+  bubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+  },
+  text: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+  },
+});

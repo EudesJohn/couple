@@ -1,22 +1,221 @@
 // ============================================================
-// 📞 Écran d'appel audio/vidéo — ZegoCloud
+// Appel premium — Audio / Vidéo
+// Animations fluides, glows, design Burgundy & Gold
 // ============================================================
 import { View, Text, TouchableOpacity, StyleSheet, findNodeHandle } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Animated, { FadeIn } from 'react-native-reanimated';
-import { ZegoSurfaceView } from 'zego-express-engine-reactnative';
-import { setPreviewView, setRemoteView } from '../../src/lib/zego';
-import { colors, typography } from '../../src/constants/theme';
+import Animated, {
+  FadeIn,
+  FadeInDown,
+  FadeOutDown,
+  useAnimatedStyle,
+  withSpring,
+  withRepeat,
+  withTiming,
+  withSequence,
+  useSharedValue,
+  withDelay,
+  Easing,
+} from 'react-native-reanimated';
+import { useRef, useCallback, useState, useEffect } from 'react';
+import { setPreviewView, setRemoteView, isZegoAvailable } from '../../src/lib/zego';
+import { colors, typography, borderRadius } from '../../src/constants/theme';
 import { useCall } from '../../src/hooks/useCall';
-import { useRef, useCallback } from 'react';
+import {
+  HeartFilledIcon, UserIcon, MicIcon, MicOffIcon,
+  VolumeIcon, PhoneOffIcon, VideoIcon,
+} from '../../src/components/Icons';
 
+// ==========================================
+// BOUTON DE CONTRÔLE AVEC ANIMATION SPRING
+// ==========================================
+function ControlBtn({
+  onPress,
+  active,
+  danger,
+  children,
+  label,
+}: {
+  onPress: () => void;
+  active?: boolean;
+  danger?: boolean;
+  children: React.ReactNode;
+  label: string;
+}) {
+  const scale = useSharedValue(1);
+  const glow = useSharedValue(active ? 1 : 0);
+
+  useEffect(() => {
+    glow.value = withSpring(active ? 1 : 0, { damping: 15, stiffness: 150 });
+  }, [active]);
+
+  const animStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  const glowStyle = useAnimatedStyle(() => ({
+    borderWidth: glow.value * 1.5,
+    borderColor: active ? colors.accent : 'transparent',
+    backgroundColor:
+      danger ? colors.error :
+      active ? 'rgba(202, 138, 4, 0.2)' :
+      'rgba(255,255,255,0.08)',
+  }));
+
+  return (
+    <Animated.View style={animStyle}>
+      <TouchableOpacity
+        onPress={onPress}
+        onPressIn={() => { scale.value = withSpring(0.85, { damping: 12, stiffness: 200 }); }}
+        onPressOut={() => { scale.value = withSpring(1, { damping: 10, stiffness: 150 }); }}
+        activeOpacity={1}
+        style={[styles.controlBtn, glowStyle] as any}
+      >
+        <View style={[
+          styles.controlIconWrap,
+          active && { backgroundColor: 'rgba(202, 138, 4, 0.15)' },
+          danger && { backgroundColor: 'rgba(220, 38, 38, 0.15)' },
+        ]}>
+          {children}
+        </View>
+        <Text style={[styles.controlLabel, active && { color: colors.accent }]}>
+          {label}
+        </Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+// ==========================================
+// BOUTON RACCROCHER — version lumineuse
+// ==========================================
+function EndCallBtn({ onPress }: { onPress: () => void }) {
+  const scale = useSharedValue(1);
+  const pulse = useSharedValue(0);
+
+  useEffect(() => {
+    pulse.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.sin) }),
+        withTiming(0, { duration: 1200, easing: Easing.inOut(Easing.sin) }),
+      ),
+      -1,
+      true,
+    );
+  }, []);
+
+  const pulseStyle = useAnimatedStyle(() => ({
+    shadowOpacity: 0.3 + pulse.value * 0.5,
+    shadowRadius: 8 + pulse.value * 16,
+  }));
+
+  return (
+    <Animated.View style={pulseStyle}>
+      <TouchableOpacity
+        onPress={onPress}
+        onPressIn={() => { scale.value = withSpring(0.88); }}
+        onPressOut={() => { scale.value = withSpring(1); }}
+        activeOpacity={1}
+        style={[styles.endCallBtn, { transform: [{ scale: scale.value }] }]}
+      >
+        <PhoneOffIcon size={22} color="#FAFAF9" />
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+// ==========================================
+// FALLBACK ZEGO
+// ==========================================
+function ZegoSurfaceFallback() {
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      <View style={styles.zegFallback}>
+        <HeartFilledIcon size={64} color={colors.accent} />
+      </View>
+    </View>
+  );
+}
+
+// ==========================================
+// ANNEAU D'APPEL PULSANT (audio)
+// ==========================================
+function PulsingRing({ isCalling }: { isCalling: boolean }) {
+  const ring1 = useSharedValue(0.3);
+  const ring2 = useSharedValue(0.05);
+  const ring3 = useSharedValue(0.0);
+
+  useEffect(() => {
+    if (isCalling) {
+      ring1.value = withRepeat(
+        withSequence(
+          withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.sin) }),
+          withTiming(0.3, { duration: 1800, easing: Easing.inOut(Easing.sin) }),
+        ),
+        -1,
+        true,
+      );
+      ring2.value = withDelay(600, withRepeat(
+        withSequence(
+          withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.sin) }),
+          withTiming(0.05, { duration: 1800, easing: Easing.inOut(Easing.sin) }),
+        ),
+        -1,
+        true,
+      ));
+      ring3.value = withDelay(1200, withRepeat(
+        withSequence(
+          withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.sin) }),
+          withTiming(0.0, { duration: 1800, easing: Easing.inOut(Easing.sin) }),
+        ),
+        -1,
+        true,
+      ));
+    } else {
+      ring1.value = withTiming(0, { duration: 300 });
+      ring2.value = withTiming(0, { duration: 300 });
+      ring3.value = withTiming(0, { duration: 300 });
+    }
+  }, [isCalling]);
+
+  const r1 = useAnimatedStyle(() => ({
+    opacity: ring1.value * 0.25,
+    transform: [{ scale: 1 + ring1.value * 0.3 }],
+  }));
+  const r2 = useAnimatedStyle(() => ({
+    opacity: ring2.value * 0.15,
+    transform: [{ scale: 1 + ring2.value * 0.4 }],
+  }));
+  const r3 = useAnimatedStyle(() => ({
+    opacity: ring3.value * 0.10,
+    transform: [{ scale: 1 + ring3.value * 0.5 }],
+  }));
+
+  return (
+    <View style={styles.ringContainer}>
+      <Animated.View style={[styles.ring, r3]} />
+      <Animated.View style={[styles.ring, r2]} />
+      <Animated.View style={[styles.ring, r1]} />
+      <View style={styles.ringCore}>
+        <HeartFilledIcon size={56} color={colors.accent} />
+      </View>
+    </View>
+  );
+}
+
+// ==========================================
+// TIMER FORMATÉ
+// ==========================================
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+// ==========================================
+// ÉCRAN PRINCIPAL
+// ==========================================
 export default function CallScreen() {
   const { role, type: routeType } = useLocalSearchParams<{
     callId: string;
@@ -25,8 +224,9 @@ export default function CallScreen() {
   }>();
   const insets = useSafeAreaInsets();
 
-  const localVideoRef = useRef<typeof ZegoSurfaceView>(null);
-  const remoteVideoRef = useRef<typeof ZegoSurfaceView>(null);
+  const localVideoRef = useRef<any>(null);
+  const remoteVideoRef = useRef<any>(null);
+  const [ZegoSurfaceViewComponent, setZegoSurfaceViewComponent] = useState<any>(null);
 
   const {
     callState,
@@ -39,25 +239,37 @@ export default function CallScreen() {
     endCall,
   } = useCall();
 
+  // Charger ZegoSurfaceView si disponible
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const available = await isZegoAvailable();
+      if (!mounted) return;
+      if (available) {
+        try {
+          const Zego = await import('zego-express-engine-reactnative');
+          if (mounted) setZegoSurfaceViewComponent(() => Zego.ZegoSurfaceView);
+        } catch { /* fallback */ }
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
+
   const isVideo = callType === 'video' || routeType === 'video';
   const isConnected = callState === 'connected';
   const isCalling = callState === 'calling' || callState === 'ringing';
 
-  // Enregistrer la vue locale pour la preview vidéo
   const handleLocalVideoLayout = useCallback(() => {
     const tag = findNodeHandle(localVideoRef.current as unknown as View);
-    if (tag !== null) {
-      setPreviewView({ reactTag: tag, viewMode: 1, backgroundColor: 0x000000 });
-    }
+    if (tag !== null) setPreviewView({ reactTag: tag, viewMode: 1, backgroundColor: 0x000000 });
   }, []);
 
-  // Enregistrer la vue distante pour le playback vidéo
   const handleRemoteVideoLayout = useCallback(() => {
     const tag = findNodeHandle(remoteVideoRef.current as unknown as View);
-    if (tag !== null) {
-      setRemoteView({ reactTag: tag, viewMode: 1, backgroundColor: 0x1A1120 });
-    }
+    if (tag !== null) setRemoteView({ reactTag: tag, viewMode: 1, backgroundColor: 0x1A1120 });
   }, []);
+
+  const ZegoView = ZegoSurfaceViewComponent || ZegoSurfaceFallback;
 
   const statusColors: Record<string, string> = {
     calling: colors.textSecondary,
@@ -78,112 +290,85 @@ export default function CallScreen() {
   const statusColor = statusColors[callState] || colors.textSecondary;
   const statusText = statusTexts[callState] || '';
 
+  const remoteViewProps = {
+    ref: remoteVideoRef,
+    onLayout: handleRemoteVideoLayout,
+    style: StyleSheet.absoluteFill,
+  };
+
+  const localViewProps = {
+    ref: localVideoRef,
+    onLayout: handleLocalVideoLayout,
+    style: StyleSheet.absoluteFill,
+  };
+
+  // --- RENDU ---
   return (
     <View style={styles.container}>
       {/* Fond vidéo */}
       <View style={styles.videoBackground}>
         {isVideo && (
           <View style={styles.remoteVideo}>
-            {/* Vue de rendu distante Zego — affichée quand connectée */}
-            {isConnected && (
-              <ZegoSurfaceView
-                ref={remoteVideoRef as any}
-                onLayout={handleRemoteVideoLayout}
-                style={StyleSheet.absoluteFill}
-              />
-            )}
-            {/* Placeholder tant que le flux distant n'est pas actif */}
-            {!isConnected && (
-              <View style={styles.remoteVideoPlaceholder}>
-                <Text style={styles.remoteVideoEmoji}>💕</Text>
+            {isConnected ? (
+              <ZegoView {...remoteViewProps} />
+            ) : (
+              <View style={styles.remotePlaceholder}>
+                <HeartFilledIcon size={80} color={colors.accent} />
               </View>
             )}
           </View>
         )}
-
-        {/* Gradient overlay — seulement sur le placeholder */}
         {isVideo && !isConnected && <View style={styles.overlay} />}
 
-        {/* PiP local (appel vidéo seulement) */}
+        {/* PiP local */}
         {isVideo && (
           <View style={styles.localVideo}>
-            {isConnected && (
-              <ZegoSurfaceView
-                ref={localVideoRef as any}
-                onLayout={handleLocalVideoLayout}
-                style={StyleSheet.absoluteFill}
-              />
-            )}
-            {!isConnected && (
-              <View style={styles.localVideoPlaceholder}>
-                <Text style={styles.localVideoEmoji}>👤</Text>
+            {isConnected ? (
+              <ZegoView {...localViewProps} />
+            ) : (
+              <View style={styles.localPlaceholder}>
+                <UserIcon size={28} color="rgba(255,255,255,0.4)" />
               </View>
             )}
           </View>
         )}
       </View>
 
-      {/* Appel audio — grande photo + infos */}
+      {/* APPEL AUDIO */}
       {!isVideo && (
-        <View style={styles.audioContent}>
-          <View style={styles.audioAvatarRing}>
-            <View style={styles.audioAvatarBg}>
-              <Text style={styles.audioAvatarEmoji}>💕</Text>
-            </View>
-          </View>
-          <Text style={styles.partnerName}>Ma chérie 💕</Text>
-          <Text style={[styles.callStatus, { color: statusColor }]}>
+        <Animated.View
+          entering={FadeInDown.duration(600).springify()}
+          style={styles.audioContent}
+        >
+          <PulsingRing isCalling={isCalling} />
+          <Text style={styles.partnerName}>Ma chérie</Text>
+          <Animated.Text
+            key={callState}
+            entering={FadeIn.duration(200)}
+            style={[styles.callStatus, { color: statusColor }]}
+          >
             {statusText}
-          </Text>
-        </View>
+          </Animated.Text>
+        </Animated.View>
       )}
 
-      {/* Timer appel vidéo */}
+      {/* TIMER VIDÉO */}
       {isVideo && (
         <View style={styles.videoTimerContainer}>
-          <Text style={[styles.videoTimer, { color: statusColor }]}>
+          <Animated.Text
+            key={callState}
+            entering={FadeIn.duration(200)}
+            style={[styles.videoTimer, { color: statusColor }]}
+          >
             {statusText}
-          </Text>
+          </Animated.Text>
         </View>
       )}
 
-      {/* Contrôles d'appel */}
-      <View style={[styles.controls, { paddingBottom: insets.bottom + 20 }]}>
-        <View style={styles.controlsRow}>
-          {/* Mute */}
-          <TouchableOpacity
-            onPress={toggleMute}
-            style={[styles.controlButton, isMuted && styles.controlButtonActive]}
-          >
-            <Text style={styles.controlIcon}>{isMuted ? '🔇' : '🎤'}</Text>
-            <Text style={styles.controlLabel}>
-              {isMuted ? 'Micro coupé' : 'Micro'}
-            </Text>
-          </TouchableOpacity>
-
-          {/* Haut-parleur */}
-          <TouchableOpacity
-            onPress={toggleSpeakerFn}
-            style={[styles.controlButton, isSpeakerOn && styles.controlButtonActive]}
-          >
-            <Text style={styles.controlIcon}>{isSpeakerOn ? '🔊' : '🔉'}</Text>
-            <Text style={styles.controlLabel}>
-              {isSpeakerOn ? 'Haut-parleur' : 'Écouteur'}
-            </Text>
-          </TouchableOpacity>
-
-          {/* Raccrocher */}
-          <TouchableOpacity onPress={endCall} style={[styles.controlButton, styles.endCallButton]}>
-            <Text style={styles.endCallIcon}>📞</Text>
-            <Text style={[styles.controlLabel, { color: '#fff' }]}>Raccrocher</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Overlay "Appel en cours" */}
+      {/* OVERLAY APPEL EN COURS */}
       {isCalling && (
         <Animated.View
-          entering={FadeIn.duration(300)}
+          entering={FadeIn.duration(400)}
           style={[styles.callingOverlay, { paddingTop: insets.top + 100 }]}
         >
           <Text style={styles.callingText}>
@@ -191,29 +376,75 @@ export default function CallScreen() {
           </Text>
         </Animated.View>
       )}
+
+      {/* CONTRÔLES */}
+      <Animated.View
+        entering={FadeIn.duration(500).delay(300)}
+        exiting={FadeOutDown.duration(300)}
+        style={[styles.controls, { paddingBottom: insets.bottom + 24 }]}
+      >
+        <View style={styles.controlsRow}>
+          <ControlBtn
+            onPress={toggleMute}
+            active={isMuted}
+            label={isMuted ? 'Micro coupé' : 'Micro'}
+          >
+            {isMuted ? (
+              <MicOffIcon size={20} color={colors.error} />
+            ) : (
+              <MicIcon size={20} color="#FAFAF9" />
+            )}
+          </ControlBtn>
+
+          <ControlBtn
+            onPress={toggleSpeakerFn}
+            active={isSpeakerOn}
+            label={isSpeakerOn ? 'Haut-parleur' : 'Écouteur'}
+          >
+            <VolumeIcon
+              size={20}
+              color={isSpeakerOn ? colors.accent : '#FAFAF9'}
+            />
+          </ControlBtn>
+
+          <View style={{ alignItems: 'center', gap: 6 }}>
+            <EndCallBtn onPress={endCall} />
+            <Text style={styles.endCallLabel}>Raccrocher</Text>
+          </View>
+
+          {/* Vidéo toggle réservé pour plus tard */}
+          {isVideo && (
+            <ControlBtn onPress={() => {}} active label="Vidéo">
+              <VideoIcon size={20} color={colors.accent} />
+            </ControlBtn>
+          )}
+        </View>
+      </Animated.View>
     </View>
   );
 }
 
+// ==========================================
+// STYLES
+// ==========================================
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1A1120',
+    backgroundColor: '#0D0A10',
   },
+
+  // ---- Vidéo ----
   videoBackground: {
     ...StyleSheet.absoluteFill,
   },
   remoteVideo: {
     flex: 1,
   },
-  remoteVideoPlaceholder: {
+  remotePlaceholder: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#2D1B36',
-  },
-  remoteVideoEmoji: {
-    fontSize: 80,
+    backgroundColor: '#1A1120',
   },
   overlay: {
     ...StyleSheet.absoluteFill,
@@ -225,61 +456,80 @@ const styles = StyleSheet.create({
     right: 16,
     width: 120,
     height: 180,
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
     borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.3)',
+    borderColor: 'rgba(255,255,255,0.2)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 10,
   },
-  localVideoPlaceholder: {
+  localPlaceholder: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#3D2B46',
+    backgroundColor: '#2D1B36',
   },
-  localVideoEmoji: {
-    fontSize: 32,
+  zegFallback: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1A1120',
   },
+
+  // ---- Audio ----
   audioContent: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 40,
   },
-  audioAvatarRing: {
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    borderWidth: 4,
-    borderColor: colors.primary,
+  ringContainer: {
+    width: 200,
+    height: 200,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 24,
-    shadowColor: colors.primary,
+    marginBottom: 32,
+  },
+  ring: {
+    position: 'absolute',
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    borderWidth: 2,
+    borderColor: colors.primary,
+  },
+  ringCore: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: '#1A1120',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: colors.glowBurgundy,
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
+    shadowOpacity: 0.4,
     shadowRadius: 30,
     elevation: 10,
-  },
-  audioAvatarBg: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
-    backgroundColor: colors.secondary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  audioAvatarEmoji: {
-    fontSize: 56,
+    borderWidth: 1.5,
+    borderColor: 'rgba(124, 45, 18, 0.4)',
   },
   partnerName: {
     ...typography.heading,
-    color: '#fff',
+    fontSize: 28,
+    color: '#FAFAF9',
     marginBottom: 8,
+    letterSpacing: -0.5,
   },
   callStatus: {
     ...typography.body,
+    fontSize: 15,
     textAlign: 'center',
   },
+
+  // ---- Timer vidéo ----
   videoTimerContainer: {
     position: 'absolute',
     top: 100,
@@ -290,49 +540,75 @@ const styles = StyleSheet.create({
   videoTimer: {
     ...typography.subheading,
     fontSize: 18,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    paddingHorizontal: 20,
+    paddingVertical: 6,
+    borderRadius: 20,
+    overflow: 'hidden',
   },
+
+  // ---- Contrôles ----
   controls: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
     paddingHorizontal: 20,
-    paddingTop: 20,
+    paddingTop: 24,
+    backgroundColor: 'rgba(13, 10, 16, 0.85)',
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
   },
   controlsRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: 16,
+    alignItems: 'flex-end',
+    gap: 24,
   },
-  controlButton: {
+  controlBtn: {
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    minWidth: 72,
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
-  controlButtonActive: {
-    backgroundColor: 'rgba(232, 160, 180, 0.3)',
-    borderWidth: 1,
-    borderColor: colors.primary,
-  },
-  controlIcon: {
-    fontSize: 22,
+  controlIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)',
   },
   controlLabel: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.8)',
+    color: 'rgba(255,255,255,0.6)',
+    textAlign: 'center',
+    fontWeight: '500',
   },
-  endCallButton: {
-    backgroundColor: colors.callRed,
-    paddingHorizontal: 20,
+  endCallBtn: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.error,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: colors.error,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
   },
-  endCallIcon: {
-    fontSize: 22,
-    color: '#fff',
-    transform: [{ rotate: '135deg' }],
+  endCallLabel: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.6)',
+    textAlign: 'center',
+    fontWeight: '500',
   },
+
+  // ---- Overlay ----
   callingOverlay: {
     position: 'absolute',
     top: 0,
@@ -343,5 +619,6 @@ const styles = StyleSheet.create({
   callingText: {
     ...typography.body,
     color: 'rgba(255,255,255,0.7)',
+    fontSize: 14,
   },
 });

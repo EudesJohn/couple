@@ -41,3 +41,11 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# temporary test files
+bundle-test.txt
+metro_error.txt
+qr-code.png
+
+# supabase RLS sql (one-time migration)
+supabase-rls-policies.sql

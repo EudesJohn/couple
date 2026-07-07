@@ -1,18 +1,56 @@
 // ============================================================
 // Auth — PIN + Biométrie (empreinte + visage)
 // Stockage sécurisé via expo-secure-store
+// Compatible Web + Mobile (imports dynamiques)
 // ============================================================
-import * as SecureStore from 'expo-secure-store';
-import * as LocalAuthentication from 'expo-local-authentication';
+import { Platform } from 'react-native';
 import { digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 
 // --- Clés SecureStore ---
 const STORE_KEYS = {
-  PIN_HASH: 'notre-bulle:pin-hash',
-  BIOMETRIC_FINGERPRINT: 'notre-bulle:bio-fingerprint',
-  BIOMETRIC_FACE: 'notre-bulle:bio-face',
-  IS_SETUP_DONE: 'notre-bulle:setup-done',
+  PIN_HASH: 'notre-bulle.pin-hash',
+  BIOMETRIC_FINGERPRINT: 'notre-bulle.bio-fingerprint',
+  BIOMETRIC_FACE: 'notre-bulle.bio-face',
+  IS_SETUP_DONE: 'notre-bulle.setup-done',
 } as const;
+
+const isWeb = Platform.OS === 'web';
+
+// --- Wrapper SecureStore compatible Web (import dynamique) ---
+async function getSecureStore() {
+  if (isWeb) return null;
+  try {
+    const mod = await import('expo-secure-store');
+    return mod.default || mod;
+  } catch { return null; }
+}
+
+async function secureGet(key: string): Promise<string | null> {
+  if (isWeb) {
+    return localStorage.getItem(key);
+  }
+  try {
+    const ss = await getSecureStore();
+    if (!ss) return localStorage.getItem(key);
+    return await ss.getItemAsync(key);
+  } catch {
+    return localStorage.getItem(key);
+  }
+}
+
+async function secureSet(key: string, value: string): Promise<void> {
+  if (isWeb) {
+    localStorage.setItem(key, value);
+    return;
+  }
+  try {
+    const ss = await getSecureStore();
+    if (ss) await ss.setItemAsync(key, value);
+    else localStorage.setItem(key, value);
+  } catch {
+    localStorage.setItem(key, value);
+  }
+}
 
 // --- Types ---
 export interface BiometricPrefs {
@@ -37,32 +75,22 @@ export async function verifyPin(pin: string, hash: string): Promise<boolean> {
 
 // --- Stockage sécurisé du PIN ---
 export async function savePinHash(hash: string): Promise<void> {
-  await SecureStore.setItemAsync(STORE_KEYS.PIN_HASH, hash);
+  await secureSet(STORE_KEYS.PIN_HASH, hash);
 }
 
 export async function getStoredPinHash(): Promise<string | null> {
-  try {
-    return await SecureStore.getItemAsync(STORE_KEYS.PIN_HASH);
-  } catch {
-    return null;
-  }
+  return secureGet(STORE_KEYS.PIN_HASH);
 }
 
 // --- Préférences biométriques ---
 export async function saveBiometricPrefs(prefs: BiometricPrefs): Promise<void> {
-  await SecureStore.setItemAsync(
-    STORE_KEYS.BIOMETRIC_FINGERPRINT,
-    prefs.fingerprint ? 'true' : 'false'
-  );
-  await SecureStore.setItemAsync(
-    STORE_KEYS.BIOMETRIC_FACE,
-    prefs.face ? 'true' : 'false'
-  );
+  await secureSet(STORE_KEYS.BIOMETRIC_FINGERPRINT, prefs.fingerprint ? 'true' : 'false');
+  await secureSet(STORE_KEYS.BIOMETRIC_FACE, prefs.face ? 'true' : 'false');
 }
 
 export async function getBiometricPrefs(): Promise<BiometricPrefs> {
-  const fp = await SecureStore.getItemAsync(STORE_KEYS.BIOMETRIC_FINGERPRINT);
-  const face = await SecureStore.getItemAsync(STORE_KEYS.BIOMETRIC_FACE);
+  const fp = await secureGet(STORE_KEYS.BIOMETRIC_FINGERPRINT);
+  const face = await secureGet(STORE_KEYS.BIOMETRIC_FACE);
   return {
     fingerprint: fp === 'true',
     face: face === 'true',
@@ -71,15 +99,12 @@ export async function getBiometricPrefs(): Promise<BiometricPrefs> {
 
 // --- Flag setup terminé ---
 export async function markSetupDone(): Promise<void> {
-  await SecureStore.setItemAsync(STORE_KEYS.IS_SETUP_DONE, 'true');
+  await secureSet(STORE_KEYS.IS_SETUP_DONE, 'true');
 }
 
 export async function isSetupDone(): Promise<boolean> {
-  try {
-    return (await SecureStore.getItemAsync(STORE_KEYS.IS_SETUP_DONE)) === 'true';
-  } catch {
-    return false;
-  }
+  const val = await secureGet(STORE_KEYS.IS_SETUP_DONE);
+  return val === 'true';
 }
 
 // --- Vérification matérielle ---
@@ -88,35 +113,47 @@ export async function getHardwareBiometrics(): Promise<{
   isEnrolled: boolean;
   availableTypes: BiometricType[];
 }> {
-  const [hasHardware, isEnrolled, supportedTypes] = await Promise.all([
-    LocalAuthentication.hasHardwareAsync(),
-    LocalAuthentication.isEnrolledAsync(),
-    LocalAuthentication.supportedAuthenticationTypesAsync(),
-  ]);
+  if (isWeb) {
+    return { hasHardware: false, isEnrolled: false, availableTypes: [] };
+  }
 
-  const availableTypes: BiometricType[] = supportedTypes.map((t) => {
-    switch (t) {
-      case LocalAuthentication.AuthenticationType.FINGERPRINT:
-        return 'fingerprint';
-      case LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION:
-        return 'face';
-      case LocalAuthentication.AuthenticationType.IRIS:
-        return 'iris';
-      default:
-        return 'fingerprint';
-    }
-  });
+  try {
+    const LocalAuth = await import('expo-local-authentication');
+    const [hasHardware, isEnrolled, supportedTypes] = await Promise.all([
+      LocalAuth.hasHardwareAsync(),
+      LocalAuth.isEnrolledAsync(),
+      LocalAuth.supportedAuthenticationTypesAsync(),
+    ]);
 
-  return { hasHardware, isEnrolled, availableTypes };
+    const availableTypes: BiometricType[] = supportedTypes.map((t: number) => {
+      switch (t) {
+        case LocalAuth.AuthenticationType.FINGERPRINT:
+          return 'fingerprint';
+        case LocalAuth.AuthenticationType.FACIAL_RECOGNITION:
+          return 'face';
+        case LocalAuth.AuthenticationType.IRIS:
+          return 'iris';
+        default:
+          return 'fingerprint';
+      }
+    });
+
+    return { hasHardware, isEnrolled, availableTypes };
+  } catch {
+    return { hasHardware: false, isEnrolled: false, availableTypes: [] };
+  }
 }
 
 // --- Authentification biométrique ---
 export async function authenticateWithBiometrics(): Promise<boolean> {
+  if (isWeb) return false;
+
   try {
+    const LocalAuth = await import('expo-local-authentication');
     const { hasHardware, isEnrolled } = await getHardwareBiometrics();
     if (!hasHardware || !isEnrolled) return false;
 
-    const result = await LocalAuthentication.authenticateAsync({
+    const result = await LocalAuth.authenticateAsync({
       promptMessage: 'Déverrouiller Notre Bulle',
       fallbackLabel: 'Utiliser le code PIN',
       cancelLabel: 'Annuler',

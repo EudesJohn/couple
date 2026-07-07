@@ -1,22 +1,30 @@
 // ============================================================
 // 🔐 Configuration initiale — PIN + Biométrie
-// Étapes : Créer PIN → Confirmer → Biométrie → Terminé
+// Design Premium Burgundy & Gold
 // ============================================================
 import { useState, useEffect, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions } from 'react-native';
 import { router } from 'expo-router';
 import Animated, {
   useAnimatedStyle,
   withSequence,
   withTiming,
   useSharedValue,
+  withSpring,
   FadeIn,
+  FadeInDown,
 } from 'react-native-reanimated';
-import { colors, typography } from '../src/constants/theme';
-import { hashPin, savePinHash, saveBiometricPrefs, getHardwareBiometrics, markSetupDone } from '../src/lib/auth';
+import { colors, typography, spacing, borderRadius } from '../src/constants/theme';
+import {
+  hashPin, savePinHash, saveBiometricPrefs,
+  getHardwareBiometrics, markSetupDone,
+} from '../src/lib/auth';
 import { useAuth } from '../src/hooks/useAuth';
+import { CheckIcon, LockIcon, UserIcon, HeartIcon } from '../src/components/Icons';
 
 const PIN_LENGTH = 4;
+const { width } = Dimensions.get('window');
+const KEY_SIZE = (width - 64 - 40) / 3;
 
 const NUMPAD_KEYS = [
   ['1', '2', '3'],
@@ -26,6 +34,29 @@ const NUMPAD_KEYS = [
 ];
 
 type SetupStep = 'create' | 'confirm' | 'biometric' | 'done';
+
+const STEP_TITLES: Record<SetupStep, { title: string; subtitle: string; icon: React.ReactNode }> = {
+  create: {
+    title: 'Crée ton code secret',
+    subtitle: 'Choisis un code à 4 chiffres',
+    icon: <LockIcon size={24} color={colors.accent} />,
+  },
+  confirm: {
+    title: 'Confirme le code',
+    subtitle: 'Entre-le une seconde fois',
+    icon: <CheckIcon size={24} color={colors.accent} />,
+  },
+  biometric: {
+    title: 'Encore plus de sécurité',
+    subtitle: 'Active un second moyen de déverrouillage',
+    icon: <UserIcon size={24} color={colors.accent} />,
+  },
+  done: {
+    title: "C'est prêt !",
+    subtitle: 'Bienvenue dans Notre Bulle',
+    icon: <HeartIcon size={24} color={colors.accent} />,
+  },
+};
 
 export default function SetupPinScreen() {
   const { checkAuth } = useAuth();
@@ -46,7 +77,6 @@ export default function SetupPinScreen() {
     transform: [{ translateX: shakeAnim.value }],
   }));
 
-  // Vérifier le matériel biométrique au montage
   useEffect(() => {
     getHardwareBiometrics().then((hw) => {
       setHasFingerprint(hw.availableTypes.includes('fingerprint') && hw.isEnrolled);
@@ -58,11 +88,11 @@ export default function SetupPinScreen() {
     setIsError(true);
     setErrorMsg(msg);
     shakeAnim.value = withSequence(
-      withTiming(-10, { duration: 50 }),
-      withTiming(10, { duration: 50 }),
-      withTiming(-10, { duration: 50 }),
-      withTiming(10, { duration: 50 }),
-      withTiming(0, { duration: 50 })
+      withTiming(-10, { duration: 40 }),
+      withTiming(10, { duration: 40 }),
+      withTiming(-10, { duration: 40 }),
+      withTiming(10, { duration: 40 }),
+      withTiming(0, { duration: 40 })
     );
     setTimeout(() => setIsError(false), 400);
   }, []);
@@ -75,18 +105,14 @@ export default function SetupPinScreen() {
         setIsError(false);
         return;
       }
-      if (key === '' || key === '') return;
+      if (key === '') return;
 
       if (step === 'create') {
         if (pin.length >= PIN_LENGTH) return;
         const newPin = pin + key;
         setPin(newPin);
-
-        // Vérification auto à 4 chiffres → passe à "confirmer"
         if (newPin.length === PIN_LENGTH) {
-          setTimeout(() => {
-            setStep('confirm');
-          }, 200);
+          setTimeout(() => setStep('confirm'), 250);
         }
       }
 
@@ -97,23 +123,15 @@ export default function SetupPinScreen() {
 
         if (newConfirm.length === PIN_LENGTH) {
           if (newConfirm === pin) {
-            // ✅ PIN confirmé → sauvegarder
             const hash = await hashPin(newConfirm);
             await savePinHash(hash);
-
-            // Proposer la biométrie si disponible
             if (hasFingerprint || hasFace) {
-              setTimeout(() => {
-                setStep('biometric');
-              }, 300);
+              setTimeout(() => setStep('biometric'), 300);
             } else {
               await markSetupDone();
-              setTimeout(() => {
-                setStep('done');
-              }, 300);
+              setTimeout(() => setStep('done'), 300);
             }
           } else {
-            // ❌ Les codes ne correspondent pas
             triggerShake('Les codes ne sont pas identiques');
             setTimeout(() => setConfirmPin(''), 400);
           }
@@ -123,65 +141,55 @@ export default function SetupPinScreen() {
     [step, pin, confirmPin]
   );
 
-  // Activer la biométrie et finir
   const handleFinishSetup = useCallback(async () => {
-    await saveBiometricPrefs({
-      fingerprint: bioFingerprint,
-      face: bioFace,
-    });
+    await saveBiometricPrefs({ fingerprint: bioFingerprint, face: bioFace });
     await markSetupDone();
-
-    // Petite animation de transition
-    setTimeout(() => {
-      setStep('done');
-    }, 200);
+    setTimeout(() => setStep('done'), 200);
   }, [bioFingerprint, bioFace]);
 
-  // Aller au chat
   const goToChat = useCallback(async () => {
     await checkAuth();
     router.replace('/chat');
   }, [checkAuth]);
 
-  // Rendu dépendant de l'étape
+  const current = STEP_TITLES[step];
+
   return (
     <View style={styles.container}>
       {/* Header */}
-      <View style={styles.branding}>
-        <Text style={styles.emoji}>{step === 'done' ? '💕' : '💫'}</Text>
-        <Text style={styles.title}>
-          {step === 'create' && 'Crée ton code secret'}
-          {step === 'confirm' && 'Confirme le code'}
-          {step === 'biometric' && 'Encore plus de sécurité'}
-          {step === 'done' && 'C\'est prêt !'}
-        </Text>
-        <Text style={styles.subtitle}>
-          {step === 'create' && 'Choisis un code à 4 chiffres'}
-          {step === 'confirm' && 'Entre-le une seconde fois'}
-          {step === 'biometric' && 'Active un second moyen de déverrouillage'}
-          {step === 'done' && 'Bienvenue dans Notre Bulle 💫'}
-        </Text>
-      </View>
+      <Animated.View key={step} entering={FadeInDown.duration(500).springify()} style={styles.header}>
+        <View style={styles.iconCircle}>
+          {current.icon}
+        </View>
+        <Text style={styles.title}>{current.title}</Text>
+        <Text style={styles.subtitle}>{current.subtitle}</Text>
+      </Animated.View>
 
-      {/* Step indicator */}
+      {/* Step Indicator */}
       <View style={styles.stepsIndicator}>
-        {(['create', 'confirm', 'biometric', 'done'] as const).map((s, i) => (
-          <View
-            key={s}
-            style={[
-              styles.stepDot,
-              (step === s || (s === 'done' && step === 'done')) && styles.stepDotActive,
-              getStepStatus(step, s, i),
-            ]}
-          />
-        ))}
+        {(['create', 'confirm', 'biometric', 'done'] as const).map((s, i) => {
+          const order: SetupStep[] = ['create', 'confirm', 'biometric', 'done'];
+          const currentIdx = order.indexOf(step);
+          const stepIdx = order.indexOf(s);
+          const isActive = s === step;
+          const isPast = stepIdx < currentIdx;
+          return (
+            <View
+              key={s}
+              style={[
+                styles.stepDot,
+                isActive && styles.stepDotActive,
+                isPast && styles.stepDotPast,
+              ]}
+            />
+          );
+        })}
       </View>
 
-      {/* PIN création / confirmation */}
+      {/* PIN Input */}
       {(step === 'create' || step === 'confirm') && (
         <>
-          {/* Dots */}
-          <Animated.View style={[styles.dotsContainer, shakeStyle]}>
+          <Animated.View entering={FadeIn.duration(300)} style={[styles.dotsContainer, shakeStyle]}>
             {Array.from({ length: PIN_LENGTH }).map((_, i) => (
               <View
                 key={i}
@@ -194,34 +202,20 @@ export default function SetupPinScreen() {
             ))}
           </Animated.View>
 
-          {/* Code PIN saisi */}
-          <Text style={styles.pinHidden}>
-            {(step === 'create' ? pin : confirmPin)
-              .split('')
-              .map(() => '●')
-              .join(' ') || ' '}
-          </Text>
-
-          {/* Numpad */}
           <View style={styles.numpad}>
             {NUMPAD_KEYS.map((row, rIdx) => (
               <View key={rIdx} style={styles.numpadRow}>
                 {row.map((key) =>
                   key === '' ? (
-                    <View key="empty" style={styles.numpadKeyPlaceholder} />
+                    <View key="empty" style={styles.keyPlaceholder} />
                   ) : (
                     <TouchableOpacity
                       key={key}
                       onPress={() => handleKeyPress(key)}
-                      activeOpacity={0.6}
-                      style={styles.numpadKey}
+                      activeOpacity={0.7}
+                      style={styles.numKey}
                     >
-                      <Text
-                        style={[
-                          styles.numpadKeyText,
-                          key === '⌫' && styles.numpadKeyTextSpecial,
-                        ]}
-                      >
+                      <Text style={[styles.numKeyText, key === '⌫' && styles.numKeyTextSpecial]}>
                         {key === '⌫' ? '⌫' : key}
                       </Text>
                     </TouchableOpacity>
@@ -235,56 +229,39 @@ export default function SetupPinScreen() {
         </>
       )}
 
-      {/* Étape Biométrie */}
+      {/* Biométrie */}
       {step === 'biometric' && (
-        <Animated.View
-          entering={FadeIn.duration(400)}
-          style={styles.biometricContainer}
-        >
+        <Animated.View entering={FadeInDown.duration(500)} style={styles.biometricContainer}>
           {hasFace && (
             <TouchableOpacity
-              style={[
-                styles.bioCard,
-                bioFace && styles.bioCardActive,
-              ]}
+              style={[styles.bioCard, bioFace && styles.bioCardActive]}
               onPress={() => setBioFace(!bioFace)}
+              activeOpacity={0.7}
             >
-              <Text style={styles.bioIcon}>👤</Text>
-              <Text style={styles.bioTitle}>Reconnaissance faciale</Text>
-              <Text style={styles.bioDesc}>
-                Déverrouille avec ton visage
-              </Text>
-              <View
-                style={[
-                  styles.checkbox,
-                  bioFace && styles.checkboxActive,
-                ]}
-              >
-                {bioFace && <Text style={styles.checkmark}>✓</Text>}
+              <UserIcon size={32} color={bioFace ? colors.accent : colors.textTertiary} />
+              <View style={styles.bioTextContainer}>
+                <Text style={styles.bioTitle}>Reconnaissance faciale</Text>
+                <Text style={styles.bioDesc}>Déverrouille avec ton visage</Text>
+              </View>
+              <View style={[styles.checkbox, bioFace && styles.checkboxActive]}>
+                {bioFace && <CheckIcon size={14} color="#FAFAF9" />}
               </View>
             </TouchableOpacity>
           )}
 
           {hasFingerprint && (
             <TouchableOpacity
-              style={[
-                styles.bioCard,
-                bioFingerprint && styles.bioCardActive,
-              ]}
+              style={[styles.bioCard, bioFingerprint && styles.bioCardActive]}
               onPress={() => setBioFingerprint(!bioFingerprint)}
+              activeOpacity={0.7}
             >
-              <Text style={styles.bioIcon}>👆</Text>
-              <Text style={styles.bioTitle}>Empreinte digitale</Text>
-              <Text style={styles.bioDesc}>
-                Déverrouille avec ton doigt
-              </Text>
-              <View
-                style={[
-                  styles.checkbox,
-                  bioFingerprint && styles.checkboxActive,
-                ]}
-              >
-                {bioFingerprint && <Text style={styles.checkmark}>✓</Text>}
+              <LockIcon size={32} color={bioFingerprint ? colors.accent : colors.textTertiary} />
+              <View style={styles.bioTextContainer}>
+                <Text style={styles.bioTitle}>Empreinte digitale</Text>
+                <Text style={styles.bioDesc}>Déverrouille avec ton doigt</Text>
+              </View>
+              <View style={[styles.checkbox, bioFingerprint && styles.checkboxActive]}>
+                {bioFingerprint && <CheckIcon size={14} color="#FAFAF9" />}
               </View>
             </TouchableOpacity>
           )}
@@ -292,40 +269,25 @@ export default function SetupPinScreen() {
           <TouchableOpacity
             style={styles.continueButton}
             onPress={handleFinishSetup}
+            activeOpacity={0.8}
           >
             <Text style={styles.continueButtonText}>
-              {bioFace || bioFingerprint
-                ? 'Activer et continuer'
-                : 'Passer pour le moment'}
+              {bioFace || bioFingerprint ? 'Activer et continuer' : 'Passer pour le moment'}
             </Text>
           </TouchableOpacity>
         </Animated.View>
       )}
 
-      {/* Étape "Terminé" */}
+      {/* Done */}
       {step === 'done' && (
-        <Animated.View
-          entering={FadeIn.duration(500)}
-          style={styles.doneContainer}
-        >
-          <TouchableOpacity style={styles.goButton} onPress={goToChat}>
-            <Text style={styles.goButtonText}>Let's go 💬</Text>
+        <Animated.View entering={FadeInDown.duration(600).springify()} style={styles.doneContainer}>
+          <TouchableOpacity style={styles.goButton} onPress={goToChat} activeOpacity={0.8}>
+            <Text style={styles.goButtonText}>Commencer l'aventure</Text>
           </TouchableOpacity>
         </Animated.View>
       )}
     </View>
   );
-}
-
-function getStepStatus(current: SetupStep, step: SetupStep, index: number) {
-  const order: SetupStep[] = ['create', 'confirm', 'biometric', 'done'];
-  const currentIdx = order.indexOf(current);
-  const stepIdx = order.indexOf(step);
-
-  if (stepIdx < currentIdx) {
-    return { backgroundColor: colors.success };
-  }
-  return {};
 }
 
 const styles = StyleSheet.create({
@@ -334,17 +296,25 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     alignItems: 'center',
     paddingHorizontal: 32,
-    paddingTop: 80,
+    paddingTop: 100,
   },
-
-  // Branding
-  branding: {
+  header: {
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 28,
   },
-  emoji: {
-    fontSize: 56,
-    marginBottom: 12,
+  iconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 1,
+    shadowRadius: 8,
+    elevation: 3,
   },
   title: {
     ...typography.heading,
@@ -357,8 +327,6 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     textAlign: 'center',
   },
-
-  // Step indicator
   stepsIndicator: {
     flexDirection: 'row',
     gap: 8,
@@ -372,15 +340,17 @@ const styles = StyleSheet.create({
   },
   stepDotActive: {
     backgroundColor: colors.primary,
-    width: 24,
+    width: 28,
+    borderRadius: 4,
   },
-
-  // Dots
+  stepDotPast: {
+    backgroundColor: colors.success,
+  },
   dotsContainer: {
     flexDirection: 'row',
     gap: 16,
     marginBottom: 12,
-    height: 24,
+    height: 16,
     alignItems: 'center',
   },
   dot: {
@@ -395,15 +365,6 @@ const styles = StyleSheet.create({
   dotError: {
     backgroundColor: colors.error,
   },
-  pinHidden: {
-    fontSize: 24,
-    letterSpacing: 8,
-    color: colors.textSecondary,
-    marginBottom: 36,
-    height: 30,
-  },
-
-  // Numpad
   numpad: {
     gap: 14,
     marginBottom: 24,
@@ -413,122 +374,116 @@ const styles = StyleSheet.create({
     gap: 20,
     justifyContent: 'center',
   },
-  numpadKey: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+  numKey: {
+    width: KEY_SIZE,
+    height: KEY_SIZE,
+    borderRadius: borderRadius.lg,
     backgroundColor: colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: colors.shadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 1,
-    shadowRadius: 6,
-    elevation: 2,
+    shadowRadius: 8,
+    elevation: 3,
   },
-  numpadKeyPlaceholder: {
-    width: 72,
-    height: 72,
+  keyPlaceholder: {
+    width: KEY_SIZE,
+    height: KEY_SIZE,
   },
-  numpadKeyText: {
-    fontSize: 26,
+  numKeyText: {
+    fontSize: 28,
     fontWeight: '500',
     color: colors.text,
   },
-  numpadKeyTextSpecial: {
+  numKeyTextSpecial: {
     fontSize: 22,
     color: colors.textSecondary,
+    fontWeight: '400',
   },
   errorText: {
     color: colors.error,
     fontSize: 14,
     marginTop: 8,
   },
-
-  // Biométrie
   biometricContainer: {
     width: '100%',
     gap: 16,
-    marginTop: 16,
+    marginTop: 8,
   },
   bioCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: colors.surface,
-    borderRadius: 16,
-    padding: 20,
-    borderWidth: 2,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    borderWidth: 1.5,
     borderColor: colors.border,
-    position: 'relative',
+    gap: spacing.md,
   },
   bioCardActive: {
-    borderColor: colors.primary,
-    backgroundColor: '#FFF5F8',
+    borderColor: colors.accent,
+    backgroundColor: '#FFFBEB',
   },
-  bioIcon: {
-    fontSize: 36,
-    marginBottom: 8,
+  bioTextContainer: {
+    flex: 1,
   },
   bioTitle: {
     ...typography.subheading,
-    fontSize: 18,
     color: colors.text,
-    marginBottom: 4,
+    marginBottom: 2,
   },
   bioDesc: {
     ...typography.caption,
     color: colors.textSecondary,
   },
   checkbox: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 2,
     borderColor: colors.border,
     justifyContent: 'center',
     alignItems: 'center',
   },
   checkboxActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  checkmark: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
   },
   continueButton: {
     backgroundColor: colors.primary,
-    paddingVertical: 16,
-    borderRadius: 14,
+    paddingVertical: spacing.lg,
+    borderRadius: borderRadius.lg,
     alignItems: 'center',
-    marginTop: 8,
+    marginTop: spacing.sm,
+    shadowColor: colors.glowBurgundy,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 6,
   },
   continueButtonText: {
-    color: '#fff',
+    color: '#FAFAF9',
     fontSize: 17,
     fontWeight: '600',
   },
-
-  // Done
   doneContainer: {
     width: '100%',
     marginTop: 40,
   },
   goButton: {
     backgroundColor: colors.primary,
-    paddingVertical: 18,
-    borderRadius: 14,
+    paddingVertical: spacing.lg,
+    borderRadius: borderRadius.lg,
     alignItems: 'center',
-    shadowColor: colors.primary,
+    shadowColor: colors.glowBurgundy,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.5,
     shadowRadius: 12,
     elevation: 6,
   },
   goButtonText: {
-    color: '#fff',
+    color: '#FAFAF9',
     fontSize: 18,
     fontWeight: '600',
   },

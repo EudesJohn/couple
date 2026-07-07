@@ -1,45 +1,63 @@
-// Palette — tons chauds et doux pour "Notre Bulle"
+// ============================================================
+// 🎨 Thème — Notre Bulle
+// Palette Burgundy + Gold — Premium, chaleureux, moderne
+// ============================================================
+
 export const colors = {
-  // Couleurs principales
-  primary: '#E8A0B4',       // Rose doux
-  primaryDark: '#C77D92',
-  secondary: '#B8A9C9',     // Lavande
-  accent: '#F4C7AB',        // Pêche
+  // --- PRIMAIRES ---
+  primary: '#7C2D12',        // Burgundy profond
+  primaryLight: '#A0522D',   // Sienna
+  primaryDark: '#5B1E0A',    // Burgundy foncé
 
-  // Messages
-  bubbleSelf: '#E8A0B4',    // Nos messages
-  bubbleOther: '#F0EBF3',   // Ses messages
-  bubbleSelfText: '#FFFFFF',
-  bubbleOtherText: '#2D1B36',
+  // --- ACCENTS ---
+  accent: '#CA8A04',         // Or chaud
+  accentLight: '#FBBF24',    // Or clair
+  accentDark: '#A16207',     // Or foncé
+  secondary: '#92400E',      // Marron chaud
 
-  // Arrière-plans
-  background: '#FAF6F9',    // Fond principal très clair
-  surface: '#FFFFFF',
-  surfaceAlt: '#F5EFF4',
+  // --- FONDS ---
+  background: '#F5F0EB',     // Beige chaud (moins blanc)
+  surface: '#FAFAF9',        // Blanc cassé chaud
+  surfaceAlt: '#F5F0EB',     // Beige clair
+  surfaceAlt2: '#EFE9E1',    // Beige moyen
+  surfaceDim: '#EDE9E3',     // Beige plus marqué
 
-  // Textes
-  text: '#2D1B36',
-  textSecondary: '#8A7A92',
-  textTertiary: '#B8ABBE',
+  // --- TEXTE ---
+  text: '#1C1917',           // Presque noir chaud
+  textSecondary: '#57534E',  // Gris chaud
+  textTertiary: '#A8A29E',   // Gris clair
+  textInverse: '#FAFAF9',   // Blanc sur fond foncé
 
-  // UI
-  border: '#E8DFE5',
-  divider: '#F0EBF3',
-  inputBackground: '#F5F0F4',
-  shadow: 'rgba(45, 27, 54, 0.08)',
+  // --- BORDURES ---
+  border: '#E7E5E4',        // Bordure chaude
+  borderLight: '#F0EDEA',   // Bordure très claire
 
-  // Statuts
-  success: '#7BC4A9',
-  warning: '#F0C27A',
-  error: '#E89292',
-  online: '#7BC4A9',
+  // --- ÉTATS ---
+  success: '#059669',        // Vert
+  error: '#DC2626',          // Rouge
+  warning: '#D97706',        // Orange
+  online: '#10B981',         // Vert en ligne
 
-  // Appels
-  callGreen: '#7BC4A9',
-  callRed: '#E89292',
-  callMuted: '#B8ABBE',
+  // --- BULLES DE CHAT ---
+  bubbleSelf: '#7C2D12',     // Bulle envoyée
+  bubbleOther: '#FFFFFF',    // Bulle reçue
+  bubbleSelfText: '#FAFAF9', // Texte bulle envoyée
+
+  // --- OMBRES ---
+  shadow: 'rgba(28, 25, 23, 0.08)',
+  shadowStrong: 'rgba(28, 25, 23, 0.15)',
+  glow: 'rgba(202, 138, 4, 0.3)',           // Glow doré
+  glowBurgundy: 'rgba(124, 45, 18, 0.2)',   // Glow burgundy
+
+  // --- GRADIENTS (pour LinearGradient) ---
+  gradient: {
+    primary: ['#7C2D12', '#A0522D'] as const,
+    accent: ['#CA8A04', '#FBBF24'] as const,
+    darkToAccent: ['#5B1E0A', '#CA8A04'] as const,
+  },
 } as const;
 
+// --- ESPACEMENTS ---
 export const spacing = {
   xs: 4,
   sm: 8,
@@ -48,37 +66,54 @@ export const spacing = {
   xl: 20,
   xxl: 24,
   xxxl: 32,
+  huge: 48,
 } as const;
 
+// --- BORDURES ---
 export const borderRadius = {
   sm: 6,
-  md: 12,
-  lg: 18,
-  xl: 24,
-  full: 9999,
+  md: 10,
+  lg: 14,
+  xl: 20,
+  pill: 999,
 } as const;
 
+// --- TYPOGRAPHIE ---
 export const typography = {
   heading: {
+    fontFamily: 'System',
     fontSize: 28,
-    fontWeight: '600' as const,
-    lineHeight: 34,
+    fontWeight: '700' as const,
+    letterSpacing: -0.5,
+    color: colors.text,
   },
   subheading: {
-    fontSize: 20,
+    fontFamily: 'System',
+    fontSize: 18,
     fontWeight: '600' as const,
-    lineHeight: 26,
+    letterSpacing: -0.3,
+    color: colors.text,
   },
   body: {
+    fontFamily: 'System',
     fontSize: 16,
-    lineHeight: 22,
+    fontWeight: '400' as const,
+    letterSpacing: 0,
+    color: colors.text,
   },
   caption: {
+    fontFamily: 'System',
     fontSize: 13,
-    lineHeight: 18,
+    fontWeight: '400' as const,
+    letterSpacing: 0,
+    color: colors.textSecondary,
   },
-  tiny: {
-    fontSize: 11,
-    lineHeight: 14,
+  label: {
+    fontFamily: 'System',
+    fontSize: 14,
+    fontWeight: '500' as const,
+    letterSpacing: 0.3,
+    color: colors.text,
+    textTransform: 'uppercase' as const,
   },
 } as const;

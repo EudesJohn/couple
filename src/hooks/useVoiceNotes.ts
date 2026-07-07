@@ -1,10 +1,12 @@
 // ============================================================
 // Hook — Enregistrement et lecture de notes vocales
+// Version sécurisée : utilise expo-av via un wrapper try-catch
+// pour éviter les crashes dans Expo Go
 // ============================================================
 import { useState, useCallback, useRef } from 'react';
-import { Audio, AVPlaybackStatus } from 'expo-av';
 import { Alert } from 'react-native';
 import { uploadMedia } from '../lib/media';
+import { getAudio } from '../lib/audio';
 
 type RecordingState = 'idle' | 'preparing' | 'recording' | 'stopped';
 type PlaybackState = 'idle' | 'playing' | 'paused';
@@ -19,6 +21,7 @@ interface UseVoiceNotesReturn {
   // Enregistrement
   recordingState: RecordingState;
   recordingDurationMs: number;
+  isAudioAvailable: boolean;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<VoiceNoteResult | null>;
   cancelRecording: () => Promise<void>;
@@ -39,7 +42,7 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
   // État enregistrement
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
   const [recordingDurationMs, setRecordingDurationMs] = useState(0);
-  const recordingRef = useRef<Audio.Recording | null>(null);
+  const recordingRef = useRef<any>(null);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recordingUriRef = useRef<string | null>(null);
 
@@ -47,63 +50,73 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
   const [playbackState, setPlaybackState] = useState<PlaybackState>('idle');
   const [playbackPositionMs, setPlaybackPositionMs] = useState(0);
   const [playbackDurationMs, setPlaybackDurationMs] = useState(0);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const soundRef = useRef<any>(null);
   const playbackTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Récupérer le module audio une fois (sera null si pas dispo)
+  const AudioMod = getAudio();
 
   // ==========================================
   // ENREGISTREMENT
   // ==========================================
   const startRecording = useCallback(async () => {
+    const mod = getAudio();
+    if (!mod) {
+      Alert.alert(
+        'Fonctionnalité non disponible',
+        'Les notes vocales ne sont pas disponibles dans Expo Go. ' +
+        'Utilise un build de développement pour cette fonctionnalité.'
+      );
+      return;
+    }
+
     try {
       setRecordingState('preparing');
 
-      // Configurer l'audio
-      await Audio.setAudioModeAsync({
+      await mod.Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
         shouldDuckAndroid: true,
       });
 
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      const { recording } = await mod.Audio.Recording.createAsync(
+        mod.Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
 
       recordingRef.current = recording;
       setRecordingState('recording');
       setRecordingDurationMs(0);
 
-      // Timer pour la durée
       const startTime = Date.now();
       recordingTimerRef.current = setInterval(() => {
         setRecordingDurationMs(Date.now() - startTime);
       }, 200);
     } catch (err) {
       console.error('Erreur enregistrement:', err);
-      Alert.alert('Erreur', 'Impossible de lancer l\'enregistrement');
+      Alert.alert('Erreur', "Impossible de lancer l'enregistrement");
       setRecordingState('idle');
     }
   }, []);
 
   const stopRecording = useCallback(async (): Promise<VoiceNoteResult | null> => {
     if (!recordingRef.current) return null;
+    const mod = getAudio();
+    if (!mod) return null;
 
     try {
       setRecordingState('stopped');
 
-      // Arrêter le timer
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current);
         recordingTimerRef.current = null;
       }
 
-      // Arrêter l'enregistrement
       await recordingRef.current.stopAndUnloadAsync();
       const uri = recordingRef.current.getURI();
       recordingRef.current = null;
 
-      // Restaurer le mode audio (plus d'enregistrement)
-      await Audio.setAudioModeAsync({
+      await mod.Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
@@ -125,6 +138,8 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
   }, [recordingDurationMs]);
 
   const cancelRecording = useCallback(async () => {
+    const mod = getAudio();
+
     if (recordingRef.current) {
       try {
         await recordingRef.current.stopAndUnloadAsync();
@@ -137,12 +152,14 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
       recordingTimerRef.current = null;
     }
 
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: false,
-      playsInSilentModeIOS: true,
-      staysActiveInBackground: false,
-      shouldDuckAndroid: true,
-    });
+    if (mod) {
+      await mod.Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+      });
+    }
 
     setRecordingState('idle');
     setRecordingDurationMs(0);
@@ -152,7 +169,7 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
   // ==========================================
   // LECTURE
   // ==========================================
-  const startPlaybackTimer = useCallback(async (sound: Audio.Sound) => {
+  const startPlaybackTimer = useCallback(async (sound: any) => {
     const status = await sound.getStatusAsync();
     if (!status.isLoaded) return;
 
@@ -176,21 +193,29 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
   }, []);
 
   const playUri = useCallback(async (uri: string) => {
-    // Libérer le son précédent
+    const mod = getAudio();
+    if (!mod) {
+      Alert.alert(
+        'Fonctionnalité non disponible',
+        'La lecture audio nécessite un build de développement.'
+      );
+      return;
+    }
+
     if (soundRef.current) {
       await soundRef.current.unloadAsync();
       soundRef.current = null;
     }
 
     try {
-      await Audio.setAudioModeAsync({
+      await mod.Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
         shouldDuckAndroid: true,
       });
 
-      const { sound } = await Audio.Sound.createAsync(
+      const { sound } = await mod.Audio.Sound.createAsync(
         { uri },
         { shouldPlay: true }
       );
@@ -201,7 +226,7 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
 
       await startPlaybackTimer(sound);
 
-      sound.setOnPlaybackStatusUpdate((status: AVPlaybackStatus) => {
+      sound.setOnPlaybackStatusUpdate((status: any) => {
         if (status.isLoaded && status.didJustFinish) {
           setPlaybackState('idle');
           setPlaybackPositionMs(0);
@@ -272,6 +297,7 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
   return {
     recordingState,
     recordingDurationMs,
+    isAudioAvailable: getAudio() !== null,
     startRecording,
     stopRecording,
     cancelRecording,
