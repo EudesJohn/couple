@@ -7,9 +7,6 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "scheme": "notre-bulle",
-    "splash": {
-      "backgroundColor": "#FAF6F9"
-    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.couple.notrebulle",
