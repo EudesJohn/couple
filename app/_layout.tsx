@@ -4,9 +4,9 @@
 // ============================================================
 import '../global.css';
 import { useEffect } from 'react';
+import { Platform } from 'react-native';
 
 import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from '../src/hooks/useAuth';
@@ -18,6 +18,17 @@ import {
   useNotificationHandler,
   setupNotificationCategories,
 } from '../src/hooks/useNotifications';
+
+const isWeb = Platform.OS === 'web';
+
+// StatusBar uniquement sur mobile
+let StatusBar: any = () => null;
+if (!isWeb) {
+  try {
+    const mod = require('expo-status-bar');
+    StatusBar = mod.StatusBar;
+  } catch {}
+}
 
 function AppInitializer({ children }: { children: React.ReactNode }) {
   // Initialiser la DB SQLite au démarrage

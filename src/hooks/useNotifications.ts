@@ -1,52 +1,67 @@
 // ============================================================
-// Hook — Notifications ultra stylées
-// Canaux : messages, appels, statuts
-// ATTENTION : imports dynamiques pour éviter le crash Expo Go
-// (expo-notifications n'est plus supporté dans Expo Go SDK 53+)
+// Hook — Notifications
+// Mobile : expo-notifications (natif)
+// Web : Web Notification API
 // ============================================================
 import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import { router } from 'expo-router';
 
-// Type local pour éviter l'import statique
-type NotificationsModule = typeof import('expo-notifications');
+const isWeb = Platform.OS === 'web';
 
 // ==========================================
-// HELPER — Import lazy de expo-notifications
-// Piège : même en import dynamique, Metro charge le module dans son
-// registre, ce qui exécute ses side effects (auto push registration).
-// Dans Expo Go, ça jette une erreur fatale. On détecte Expo Go
-// AVANT via expo-constants pour ne JAMAIS charger le module.
+// WEB : Notification API
 // ==========================================
+async function requestWebNotificationPermission(): Promise<boolean> {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') return true;
+  if (Notification.permission === 'denied') return false;
+
+  const permission = await Notification.requestPermission();
+  return permission === 'granted';
+}
+
+function sendWebNotification(title: string, body: string, data?: Record<string, any>) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+  try {
+    const notif = new Notification(title, {
+      body,
+      icon: '/favicon.png',
+      badge: '/favicon.png',
+      tag: 'notre-bulle',
+      data,
+    });
+
+    notif.onclick = () => {
+      if (data?.screen === 'chat') {
+        window.focus();
+        router.push('/chat');
+      } else if (data?.screen === 'call') {
+        window.focus();
+      }
+      notif.close();
+    };
+
+    // Auto close after 5s
+    setTimeout(() => notif.close(), 5000);
+  } catch (err) {
+    console.warn('Web notification error:', err);
+  }
+}
+
+// ==========================================
+// MOBILE : expo-notifications (import dynamique)
+// ==========================================
+type NotificationsModule = typeof import('expo-notifications');
+
 let notificationModule: NotificationsModule | null = null;
 let notificationChecked = false;
 let notificationAvailable = false;
 
-async function checkExpoGo(): Promise<boolean> {
-  try {
-    const Constants = await import('expo-constants');
-    return Constants.default?.executionEnvironment === 'storeClient';
-  } catch {
-    return false;
-  }
-}
+async function getMobileNotifications(): Promise<NotificationsModule | null> {
+  if (notificationChecked) return notificationAvailable ? notificationModule : null;
 
-async function getNotifications(): Promise<NotificationsModule | null> {
-  // Si déjà déterminé
-  if (notificationChecked) {
-    return notificationAvailable ? notificationModule : null;
-  }
-
-  // Vérifier si on est dans Expo Go
-  const isExpoGo = await checkExpoGo();
-  if (isExpoGo) {
-    console.warn('⚠️ Notifications désactivées (Expo Go)');
-    notificationChecked = true;
-    notificationAvailable = false;
-    return null;
-  }
-
-  // Tentative d'import du module natif
   try {
     const mod = await import('expo-notifications');
     notificationModule = mod;
@@ -54,7 +69,7 @@ async function getNotifications(): Promise<NotificationsModule | null> {
     notificationChecked = true;
     return notificationModule;
   } catch (err) {
-    console.warn('⚠️ expo-notifications indisponible :', err);
+    console.warn('⚠️ expo-notifications indisponible:', err);
     notificationChecked = true;
     notificationAvailable = false;
     return null;
@@ -65,10 +80,11 @@ async function getNotifications(): Promise<NotificationsModule | null> {
 // INITIALISATION
 // ==========================================
 export async function setupNotifications(): Promise<void> {
-  const N = await getNotifications();
+  if (isWeb) return; // Web: pas de setup nécessaire
+
+  const N = await getMobileNotifications();
   if (!N) return;
 
-  // Configurer le handler d'affichage
   N.setNotificationHandler({
     handleNotification: async () => ({
       shouldShowAlert: true,
@@ -80,7 +96,6 @@ export async function setupNotifications(): Promise<void> {
   });
 
   if (Platform.OS === 'android') {
-    // Canal Messages
     await N.setNotificationChannelAsync('messages', {
       name: 'Messages',
       description: 'Nouveaux messages de ta partenaire',
@@ -92,7 +107,6 @@ export async function setupNotifications(): Promise<void> {
       showBadge: true,
     });
 
-    // Canal Appels
     await N.setNotificationChannelAsync('calls', {
       name: 'Appels',
       description: 'Appels entrants et notifications',
@@ -104,7 +118,6 @@ export async function setupNotifications(): Promise<void> {
       showBadge: true,
     });
 
-    // Canal Statuts
     await N.setNotificationChannelAsync('status', {
       name: 'Statuts',
       description: 'Messages lus, presence en ligne',
@@ -120,7 +133,9 @@ export async function setupNotifications(): Promise<void> {
 
 // Demander la permission
 export async function requestNotificationPermission(): Promise<boolean> {
-  const N = await getNotifications();
+  if (isWeb) return requestWebNotificationPermission();
+
+  const N = await getMobileNotifications();
   if (!N) return false;
   const { status } = await N.requestPermissionsAsync();
   return status === 'granted';
@@ -134,7 +149,13 @@ export async function notifyNewMessage(
   content: string | null,
   conversationId: string
 ): Promise<void> {
-  const N = await getNotifications();
+  if (isWeb) {
+    const body = content ?? 'Photo ou media reçu';
+    sendWebNotification(senderName, body, { screen: 'chat', conversationId });
+    return;
+  }
+
+  const N = await getMobileNotifications();
   if (!N) return;
 
   const body = content ?? 'Photo ou media recu';
@@ -158,7 +179,13 @@ export async function notifyIncomingCall(
   callerName: string,
   callType: 'audio' | 'video'
 ): Promise<void> {
-  const N = await getNotifications();
+  if (isWeb) {
+    const typeLabel = callType === 'video' ? 'Video' : 'Audio';
+    sendWebNotification(`Appel ${typeLabel}`, `${callerName} t'appelle...`, { screen: 'call', callType });
+    return;
+  }
+
+  const N = await getMobileNotifications();
   if (!N) return;
 
   const typeLabel = callType === 'video' ? 'Video' : 'Audio';
@@ -184,10 +211,15 @@ export async function notifyStatusChange(
   senderName: string,
   status: 'delivered' | 'read'
 ): Promise<void> {
-  const N = await getNotifications();
-  if (!N) return;
-
   const label = status === 'read' ? 'a lu ton message' : 'message distribue';
+
+  if (isWeb) {
+    sendWebNotification(senderName, label, { screen: 'chat' });
+    return;
+  }
+
+  const N = await getMobileNotifications();
+  if (!N) return;
 
   await N.scheduleNotificationAsync({
     content: {
@@ -205,7 +237,6 @@ export async function notifyStatusChange(
 // GESTION DES CLICS SUR NOTIFICATION
 // ==========================================
 export function useNotificationHandler() {
-  const responseRef = useRef<{ remove: () => void } | null>(null);
   const handlerCalled = useRef(false);
 
   useEffect(() => {
@@ -213,44 +244,31 @@ export function useNotificationHandler() {
     handlerCalled.current = true;
 
     (async () => {
+      if (isWeb) return; // Les clics sont gérés dans sendWebNotification
+
       try {
-        const N = await getNotifications();
+        const N = await getMobileNotifications();
         if (!N) return;
 
-        // Si l'app est ouverte via une notification
-        N.getLastNotificationResponseAsync().then((response) => {
-          if (response) {
-            handleNotificationResponse(response);
-          }
-        }).catch(() => {
-          // ignore
-        });
+        N.getLastNotificationResponseAsync().then((response: any) => {
+          if (response) handleNotificationResponse(response);
+        }).catch(() => {});
 
-        // Écouter les clics
-        const sub = N.addNotificationResponseReceivedListener(
-          handleNotificationResponse
-        );
-        responseRef.current = sub;
+        const sub = N.addNotificationResponseReceivedListener(handleNotificationResponse);
+        return () => { sub?.remove(); };
       } catch (err) {
         console.warn('⚠️ Erreur handler notifications:', err);
       }
     })();
-
-    return () => {
-      responseRef.current?.remove();
-    };
   }, []);
 }
 
 function handleNotificationResponse(response: any) {
   const data = response.notification.request.content.data;
-
   if (data?.screen === 'chat') {
     router.push('/chat');
   } else if (data?.screen === 'call') {
-    if (router.canGoBack()) {
-      router.back();
-    }
+    if (router.canGoBack()) router.back();
   }
 }
 
@@ -258,13 +276,26 @@ function handleNotificationResponse(response: any) {
 // BADGE
 // ==========================================
 export async function setBadgeCount(count: number): Promise<void> {
-  const N = await getNotifications();
+  if (isWeb) {
+    // Web: favicon badge or just noop
+    if ('setAppBadge' in navigator) {
+      try { await (navigator as any).setAppBadge(count); } catch {}
+    }
+    return;
+  }
+  const N = await getMobileNotifications();
   if (!N) return;
   await N.setBadgeCountAsync(count);
 }
 
 export async function clearBadge(): Promise<void> {
-  const N = await getNotifications();
+  if (isWeb) {
+    if ('clearAppBadge' in navigator) {
+      try { await (navigator as any).clearAppBadge(); } catch {}
+    }
+    return;
+  }
+  const N = await getMobileNotifications();
   if (!N) return;
   await N.setBadgeCountAsync(0);
 }
@@ -273,9 +304,11 @@ export async function clearBadge(): Promise<void> {
 // ACTIONS SUR LES NOTIFICATIONS (Android)
 // ==========================================
 export function setupNotificationCategories(): void {
+  if (isWeb) return;
+
   (async () => {
     try {
-      const N = await getNotifications();
+      const N = await getMobileNotifications();
       if (!N) return;
 
       await N.setNotificationCategoryAsync('message', [

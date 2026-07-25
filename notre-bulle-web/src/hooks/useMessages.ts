@@ -150,7 +150,7 @@ export function useMessages(): UseMessagesReturn {
             table: 'messages',
             filter: `conversation_id=eq.${convId}`,
           },
-          async (payload) => {
+          async (payload: any) => {
             const newMsg = payload.new as Message;
 
             // Éviter les doublons
@@ -207,7 +207,7 @@ export function useMessages(): UseMessagesReturn {
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'message_status' },
-          (payload) => {
+          (payload: any) => {
             if (!mounted) return;
             const updatedStatus = payload.new as MessageStatus;
 

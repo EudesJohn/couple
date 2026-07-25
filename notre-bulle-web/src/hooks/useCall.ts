@@ -83,7 +83,7 @@ export function useCall(): UseCallReturn {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'calls' },
-        async (payload) => {
+        async (payload: any) => {
           const call = payload.new as Call;
           const me = await getCurrentProfile();
           if (!me || call.caller_id === me.id) return;
@@ -97,7 +97,7 @@ export function useCall(): UseCallReturn {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'calls' },
-        async (payload) => {
+        async (payload: any) => {
           const updated = payload.new as Call;
           const me = await getCurrentProfile();
           if (!me) return;

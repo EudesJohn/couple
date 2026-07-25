@@ -58,7 +58,7 @@ export function usePresence(): UsePresenceReturn {
             table: 'presence',
             filter: `profile_id=eq.${partnerId}`,
           },
-          (payload) => {
+          (payload: any) => {
             setPartnerPresence(payload.new as Presence);
           }
         )

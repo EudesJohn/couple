@@ -1,12 +1,11 @@
 // ============================================================
 // Hook — Enregistrement et lecture de notes vocales
-// Version sécurisée : utilise expo-av via un wrapper try-catch
-// pour éviter les crashes dans Expo Go
+// Mobile : expo-av (natif)
+// Web : MediaRecorder API + HTMLAudioElement
 // ============================================================
 import { useState, useCallback, useRef } from 'react';
-import { Alert } from 'react-native';
-import { uploadMedia } from '../lib/media';
-import { getAudio } from '../lib/audio';
+import { Alert, Platform } from 'react-native';
+import { getAudio, isMediaRecorderAvailable } from '../lib/audio';
 
 type RecordingState = 'idle' | 'preparing' | 'recording' | 'stopped';
 type PlaybackState = 'idle' | 'playing' | 'paused';
@@ -18,7 +17,6 @@ interface VoiceNoteResult {
 }
 
 interface UseVoiceNotesReturn {
-  // Enregistrement
   recordingState: RecordingState;
   recordingDurationMs: number;
   isAudioAvailable: boolean;
@@ -26,53 +24,106 @@ interface UseVoiceNotesReturn {
   stopRecording: () => Promise<VoiceNoteResult | null>;
   cancelRecording: () => Promise<void>;
 
-  // Lecture
   playbackState: PlaybackState;
   playbackPositionMs: number;
   playbackDurationMs: number;
   playUri: (uri: string) => Promise<void>;
   togglePlayback: () => Promise<void>;
   stopPlayback: () => Promise<void>;
-
-  // Upload
-  uploadVoiceNote: (uri: string, durationMs: number) => Promise<{ path: string; url: string } | null>;
 }
+
+const isWeb = Platform.OS === 'web';
 
 export function useVoiceNotes(): UseVoiceNotesReturn {
   // État enregistrement
   const [recordingState, setRecordingState] = useState<RecordingState>('idle');
   const [recordingDurationMs, setRecordingDurationMs] = useState(0);
-  const recordingRef = useRef<any>(null);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recordingUriRef = useRef<string | null>(null);
+
+  // Web: MediaRecorder refs
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaChunksRef = useRef<Blob[]>([]);
+
+  // Mobile: expo-av recording ref
+  const expoRecordingRef = useRef<any>(null);
 
   // État lecture
   const [playbackState, setPlaybackState] = useState<PlaybackState>('idle');
   const [playbackPositionMs, setPlaybackPositionMs] = useState(0);
   const [playbackDurationMs, setPlaybackDurationMs] = useState(0);
-  const soundRef = useRef<any>(null);
   const playbackTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Récupérer le module audio une fois (sera null si pas dispo)
-  const AudioMod = getAudio();
+  // Mobile: expo-av sound ref
+  const soundRef = useRef<any>(null);
+  // Web: HTMLAudioElement ref
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
+
+  const AudioMod = !isWeb ? getAudio() : null;
+  const canRecordWeb = isWeb && isMediaRecorderAvailable();
 
   // ==========================================
   // ENREGISTREMENT
   // ==========================================
   const startRecording = useCallback(async () => {
+    if (isWeb) {
+      // --- WEB : MediaRecorder API ---
+      if (!canRecordWeb) {
+        Alert.alert(
+          'Fonctionnalité non disponible',
+          "L'enregistrement vocal nécessite un navigateur récent avec accès au microphone."
+        );
+        return;
+      }
+
+      try {
+        setRecordingState('preparing');
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaChunksRef.current = [];
+        const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+        mediaRecorderRef.current = recorder;
+
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) mediaChunksRef.current.push(e.data);
+        };
+
+        recorder.onstop = () => {
+          // Arrêter le stream
+          stream.getTracks().forEach(t => t.stop());
+        };
+
+        recorder.start();
+        setRecordingState('recording');
+        setRecordingDurationMs(0);
+
+        const startTime = Date.now();
+        recordingTimerRef.current = setInterval(() => {
+          setRecordingDurationMs(Date.now() - startTime);
+        }, 200);
+      } catch (err: any) {
+        console.error('Erreur enregistrement web:', err);
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          Alert.alert('Microphone', 'Permission d\'accès au microphone refusée.');
+        } else {
+          Alert.alert('Erreur', "Impossible de lancer l'enregistrement");
+        }
+        setRecordingState('idle');
+      }
+      return;
+    }
+
+    // --- MOBILE : expo-av ---
     const mod = getAudio();
     if (!mod) {
       Alert.alert(
         'Fonctionnalité non disponible',
-        'Les notes vocales ne sont pas disponibles dans Expo Go. ' +
-        'Utilise un build de développement pour cette fonctionnalité.'
+        'Les notes vocales ne sont pas disponibles dans Expo Go. Utilise un build de développement.'
       );
       return;
     }
 
     try {
       setRecordingState('preparing');
-
       await mod.Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
@@ -84,7 +135,7 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
         mod.Audio.RecordingOptionsPresets.HIGH_QUALITY
       );
 
-      recordingRef.current = recording;
+      expoRecordingRef.current = recording;
       setRecordingState('recording');
       setRecordingDurationMs(0);
 
@@ -97,24 +148,53 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
       Alert.alert('Erreur', "Impossible de lancer l'enregistrement");
       setRecordingState('idle');
     }
-  }, []);
+  }, [canRecordWeb]);
 
   const stopRecording = useCallback(async (): Promise<VoiceNoteResult | null> => {
-    if (!recordingRef.current) return null;
+    if (isWeb) {
+      // --- WEB ---
+      const recorder = mediaRecorderRef.current;
+      if (!recorder || recorder.state === 'inactive') return null;
+
+      return new Promise((resolve) => {
+        recorder.onstop = () => {
+          const blob = new Blob(mediaChunksRef.current, { type: 'audio/webm;codecs=opus' });
+          const url = URL.createObjectURL(blob);
+          recordingUriRef.current = url;
+          mediaRecorderRef.current = null;
+
+          if (recordingTimerRef.current) {
+            clearInterval(recordingTimerRef.current);
+            recordingTimerRef.current = null;
+          }
+
+          setRecordingState('stopped');
+          resolve({
+            uri: url,
+            durationMs: recordingDurationMs,
+            mimeType: 'audio/webm',
+          });
+        };
+
+        recorder.stop();
+      });
+    }
+
+    // --- MOBILE : expo-av ---
+    if (!expoRecordingRef.current) return null;
     const mod = getAudio();
     if (!mod) return null;
 
     try {
       setRecordingState('stopped');
-
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current);
         recordingTimerRef.current = null;
       }
 
-      await recordingRef.current.stopAndUnloadAsync();
-      const uri = recordingRef.current.getURI();
-      recordingRef.current = null;
+      await expoRecordingRef.current.stopAndUnloadAsync();
+      const uri = expoRecordingRef.current.getURI();
+      expoRecordingRef.current = null;
 
       await mod.Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
@@ -126,11 +206,7 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
       if (!uri) return null;
 
       recordingUriRef.current = uri;
-      return {
-        uri,
-        durationMs: recordingDurationMs,
-        mimeType: 'audio/m4a',
-      };
+      return { uri, durationMs: recordingDurationMs, mimeType: 'audio/m4a' };
     } catch (err) {
       console.error('Erreur arrêt enregistrement:', err);
       return null;
@@ -138,27 +214,42 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
   }, [recordingDurationMs]);
 
   const cancelRecording = useCallback(async () => {
-    const mod = getAudio();
-
-    if (recordingRef.current) {
-      try {
-        await recordingRef.current.stopAndUnloadAsync();
-      } catch {}
-      recordingRef.current = null;
+    if (isWeb) {
+      // --- WEB ---
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        try { recorder.stop(); } catch {}
+        // Libérer le stream
+        if (recorder.stream) {
+          recorder.stream.getTracks().forEach(t => t.stop());
+        }
+      }
+      mediaRecorderRef.current = null;
+      mediaChunksRef.current = [];
+    } else {
+      // --- MOBILE ---
+      const mod = getAudio();
+      if (expoRecordingRef.current) {
+        try {
+          await expoRecordingRef.current.stopAndUnloadAsync();
+        } catch {}
+        expoRecordingRef.current = null;
+      }
+      if (mod) {
+        await mod.Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+          shouldDuckAndroid: true,
+        });
+      }
     }
 
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
-    }
-
-    if (mod) {
-      await mod.Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
-        shouldDuckAndroid: true,
-      });
     }
 
     setRecordingState('idle');
@@ -169,30 +260,63 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
   // ==========================================
   // LECTURE
   // ==========================================
-  const startPlaybackTimer = useCallback(async (sound: any) => {
-    const status = await sound.getStatusAsync();
-    if (!status.isLoaded) return;
-
-    setPlaybackDurationMs(status.durationMillis ?? 0);
-
-    if (playbackTimerRef.current) clearInterval(playbackTimerRef.current);
-    playbackTimerRef.current = setInterval(async () => {
-      const s = await sound.getStatusAsync();
-      if (s.isLoaded) {
-        setPlaybackPositionMs(s.positionMillis);
-        if (s.didJustFinish) {
-          setPlaybackState('idle');
-          setPlaybackPositionMs(0);
-          if (playbackTimerRef.current) {
-            clearInterval(playbackTimerRef.current);
-            playbackTimerRef.current = null;
-          }
-        }
-      }
-    }, 200);
+  const clearPlaybackTimer = useCallback(() => {
+    if (playbackTimerRef.current) {
+      clearInterval(playbackTimerRef.current);
+      playbackTimerRef.current = null;
+    }
   }, []);
 
+  const startPlaybackTimer = useCallback((duration: number) => {
+    clearPlaybackTimer();
+    setPlaybackPositionMs(0);
+    playbackTimerRef.current = setInterval(() => {
+      setPlaybackPositionMs(prev => {
+        if (prev >= duration) {
+          clearPlaybackTimer();
+          setPlaybackState('idle');
+          return 0;
+        }
+        return prev + 200;
+      });
+    }, 200);
+  }, [clearPlaybackTimer]);
+
   const playUri = useCallback(async (uri: string) => {
+    if (isWeb) {
+      // --- WEB : HTMLAudioElement ---
+      try {
+        stopPlayback();
+
+        const audio = new Audio(uri);
+        audioElementRef.current = audio;
+
+        audio.onloadedmetadata = () => {
+          setPlaybackDurationMs(audio.duration * 1000);
+          audio.play().then(() => {
+            setPlaybackState('playing');
+            startPlaybackTimer(audio.duration * 1000);
+          }).catch(err => {
+            console.error('Erreur lecture audio web:', err);
+          });
+        };
+
+        audio.onended = () => {
+          setPlaybackState('idle');
+          setPlaybackPositionMs(0);
+          clearPlaybackTimer();
+        };
+
+        audio.onerror = (e) => {
+          console.error('Erreur chargement audio web:', e);
+        };
+      } catch (err) {
+        console.error('Erreur lecture:', err);
+      }
+      return;
+    }
+
+    // --- MOBILE : expo-av ---
     const mod = getAudio();
     if (!mod) {
       Alert.alert(
@@ -202,12 +326,12 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
       return;
     }
 
-    if (soundRef.current) {
-      await soundRef.current.unloadAsync();
-      soundRef.current = null;
-    }
-
     try {
+      if (soundRef.current) {
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      }
+
       await mod.Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         playsInSilentModeIOS: true,
@@ -224,26 +348,43 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
       setPlaybackState('playing');
       setPlaybackPositionMs(0);
 
-      await startPlaybackTimer(sound);
+      const status = await sound.getStatusAsync();
+      if (status.isLoaded && status.durationMillis) {
+        setPlaybackDurationMs(status.durationMillis);
+        startPlaybackTimer(status.durationMillis);
+      }
 
-      sound.setOnPlaybackStatusUpdate((status: any) => {
-        if (status.isLoaded && status.didJustFinish) {
+      sound.setOnPlaybackStatusUpdate((s: any) => {
+        if (s.isLoaded && s.didJustFinish) {
           setPlaybackState('idle');
           setPlaybackPositionMs(0);
-          if (playbackTimerRef.current) {
-            clearInterval(playbackTimerRef.current);
-            playbackTimerRef.current = null;
-          }
+          clearPlaybackTimer();
         }
       });
     } catch (err) {
       console.error('Erreur lecture:', err);
     }
-  }, [startPlaybackTimer]);
+  }, [startPlaybackTimer, clearPlaybackTimer, stopPlayback]);
 
   const togglePlayback = useCallback(async () => {
-    if (!soundRef.current) return;
+    if (isWeb) {
+      const audio = audioElementRef.current;
+      if (!audio) return;
 
+      if (audio.paused) {
+        await audio.play();
+        setPlaybackState('playing');
+        if (playbackDurationMs > 0) startPlaybackTimer(playbackDurationMs);
+      } else {
+        audio.pause();
+        setPlaybackState('paused');
+        clearPlaybackTimer();
+      }
+      return;
+    }
+
+    // Mobile
+    if (!soundRef.current) return;
     try {
       const status = await soundRef.current.getStatusAsync();
       if (!status.isLoaded) return;
@@ -251,53 +392,47 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
       if (status.isPlaying) {
         await soundRef.current.pauseAsync();
         setPlaybackState('paused');
+        clearPlaybackTimer();
       } else {
         await soundRef.current.playAsync();
         setPlaybackState('playing');
-        await startPlaybackTimer(soundRef.current);
+        if (playbackDurationMs > 0) startPlaybackTimer(playbackDurationMs);
       }
     } catch (err) {
       console.error('Erreur toggle lecture:', err);
     }
-  }, [startPlaybackTimer]);
+  }, [playbackDurationMs, startPlaybackTimer, clearPlaybackTimer]);
 
   const stopPlayback = useCallback(async () => {
-    if (soundRef.current) {
-      await soundRef.current.stopAsync();
-      await soundRef.current.unloadAsync();
-      soundRef.current = null;
+    if (isWeb) {
+      const audio = audioElementRef.current;
+      if (audio) {
+        audio.pause();
+        audio.src = '';
+        audioElementRef.current = null;
+      }
+    } else {
+      if (soundRef.current) {
+        try {
+          await soundRef.current.stopAsync();
+          await soundRef.current.unloadAsync();
+        } catch {}
+        soundRef.current = null;
+      }
     }
 
-    if (playbackTimerRef.current) {
-      clearInterval(playbackTimerRef.current);
-      playbackTimerRef.current = null;
-    }
-
+    clearPlaybackTimer();
     setPlaybackState('idle');
     setPlaybackPositionMs(0);
     setPlaybackDurationMs(0);
-  }, []);
+  }, [clearPlaybackTimer]);
 
-  // ==========================================
-  // UPLOAD
-  // ==========================================
-  const uploadVoiceNote = useCallback(async (
-    uri: string,
-    durationMs: number
-  ): Promise<{ path: string; url: string } | null> => {
-    try {
-      const result = await uploadMedia('VOICE_NOTES', uri, 'audio/m4a');
-      return { path: result.path, url: result.publicUrl };
-    } catch (err) {
-      console.error('Erreur upload note vocale:', err);
-      return null;
-    }
-  }, []);
+  const isAudioAvailable = isWeb ? canRecordWeb : getAudio() !== null;
 
   return {
     recordingState,
     recordingDurationMs,
-    isAudioAvailable: getAudio() !== null,
+    isAudioAvailable,
     startRecording,
     stopRecording,
     cancelRecording,
@@ -308,7 +443,5 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
     playUri,
     togglePlayback,
     stopPlayback,
-
-    uploadVoiceNote,
   };
 }

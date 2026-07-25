@@ -36,7 +36,21 @@
       ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single",
+      "meta": {
+        "viewport": "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+      },
+      "name": "Notre Bulle",
+      "shortName": "Notre Bulle",
+      "description": "L'espace privé pour nous deux",
+      "lang": "fr-FR",
+      "scope": "/",
+      "themeColor": "#7C2D12",
+      "backgroundColor": "#F5F0EB",
+      "preferRelatedApplications": false,
+      "startUrl": "/"
     },
     "plugins": [
       "expo-router",
@@ -51,7 +65,8 @@
           "android": {
             "compileSdkVersion": 36,
             "targetSdkVersion": 36,
-            "minSdkVersion": 26
+            "minSdkVersion": 26,
+            "newArchEnabled": false
           }
         }
       ],

@@ -1,78 +1,86 @@
 // ============================================================
-// Base de données locale SQLite — Cache des messages
+// Base de données locale — Cache des messages (SQLite natif / IndexedDB web)
 // Lecture instantanée avant sync Supabase
 // ============================================================
-import * as SQLite from 'expo-sqlite';
 import type { MessageWithDetails, Message, Attachment, MessageStatus } from '../types/database';
 
-let db: SQLite.SQLiteDatabase | null = null;
+let db: any = null;
+let isWeb = false;
+
+// Vérifier si on est sur le web
+try {
+  isWeb = typeof window !== 'undefined' && typeof window.document !== 'undefined';
+} catch { isWeb = true; }
 
 // ==========================================
 // INITIALISATION
 // ==========================================
 export async function initDatabase(): Promise<void> {
-  db = await SQLite.openDatabaseAsync('notre-bulle.db');
+  // Sur le web, on utilise localStorage comme cache simple
+  if (isWeb) {
+    console.log('✅ Web: cache localStorage initialisé');
+    return;
+  }
 
-  // Activer WAL pour les performances
-  await db.execAsync('PRAGMA journal_mode = WAL;');
-
-  // Créer les tables
-  await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL,
-      sender_id TEXT NOT NULL,
-      type TEXT NOT NULL DEFAULT 'text',
-      content TEXT,
-      reply_to TEXT,
-      edited_at TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      sender_display_name TEXT,
-      sender_avatar_url TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS attachments (
-      id TEXT PRIMARY KEY,
-      message_id TEXT NOT NULL,
-      storage_path TEXT,
-      local_path TEXT,
-      mime_type TEXT NOT NULL,
-      file_size INTEGER,
-      duration_ms INTEGER,
-      width INTEGER,
-      height INTEGER,
-      thumbnail_path TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS message_status (
-      message_id TEXT NOT NULL,
-      profile_id TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'sent',
-      read_at TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (message_id, profile_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS conversations (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS profiles (
-      id TEXT PRIMARY KEY,
-      supabase_uid TEXT,
-      display_name TEXT NOT NULL DEFAULT '',
-      avatar_url TEXT,
-      updated_at TEXT
-    );
-
-    -- Index pour accélérer les requêtes
-    CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments(message_id);
-    CREATE INDEX IF NOT EXISTS idx_status_msg ON message_status(message_id);
-  `);
+  // Sur mobile : SQLite natif
+  try {
+    const SQLite = await import('expo-sqlite');
+    db = await SQLite.openDatabaseAsync('notre-bulle.db');
+    await db.execAsync('PRAGMA journal_mode = WAL;');
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        sender_id TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'text',
+        content TEXT,
+        reply_to TEXT,
+        edited_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        sender_display_name TEXT,
+        sender_avatar_url TEXT
+      );
+      CREATE TABLE IF NOT EXISTS attachments (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL,
+        storage_path TEXT,
+        local_path TEXT,
+        mime_type TEXT NOT NULL,
+        file_size INTEGER,
+        duration_ms INTEGER,
+        width INTEGER,
+        height INTEGER,
+        thumbnail_path TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS message_status (
+        message_id TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'sent',
+        read_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (message_id, profile_id)
+      );
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS profiles (
+        id TEXT PRIMARY KEY,
+        supabase_uid TEXT,
+        display_name TEXT NOT NULL DEFAULT '',
+        avatar_url TEXT,
+        updated_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments(message_id);
+      CREATE INDEX IF NOT EXISTS idx_status_msg ON message_status(message_id);
+    `);
+    console.log('✅ Base locale initialisée');
+  } catch (err) {
+    console.warn('⚠️ SQLite indisponible, cache désactivé:', err);
+  }
 }
 
 // ==========================================

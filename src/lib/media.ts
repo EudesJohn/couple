@@ -1,9 +1,12 @@
 // ============================================================
 // Service Média — upload to Supabase Storage + compression
-// Approche React Native native (sans Blob ArrayBuffer)
+// Web: utilise Blob (fetch + blob), Mobile: React Native {uri, type, name}
 // ============================================================
 import { supabase } from './supabase';
+import { Platform } from 'react-native';
 import * as Crypto from 'expo-crypto';
+
+const isWeb = Platform.OS === 'web';
 
 const BUCKETS = {
   MEDIA: 'media',
@@ -15,6 +18,22 @@ const BUCKETS = {
 function generateFileName(ext: string): string {
   const id = Crypto.randomUUID();
   return `${id.slice(0, 8)}-${Date.now()}.${ext}`;
+}
+
+// Convertir une URI web (blob URL, data URL, etc.) en Blob
+async function uriToBlob(uri: string): Promise<Blob> {
+  // Si c'est déjà une blob URL ou une URL distante
+  if (uri.startsWith('blob:') || uri.startsWith('http:') || uri.startsWith('https:')) {
+    const response = await fetch(uri);
+    return response.blob();
+  }
+  // Si c'est une data URL
+  if (uri.startsWith('data:')) {
+    const res = await fetch(uri);
+    return res.blob();
+  }
+  // Fallback: créer un blob minimal
+  return new Blob([''], { type: 'application/octet-stream' });
 }
 
 // Extraire l'extension du MIME type
@@ -64,19 +83,32 @@ export async function uploadMedia(
   const fileName = generateFileName(ext);
   const filePath = `${bucket}/${fileName}`;
 
-  // En React Native, on passe un objet avec `uri` au lieu d'un Blob
-  const { data, error } = await supabase.storage
-    .from(BUCKETS[bucket])
-    .upload(filePath, {
-      uri,
-      type: mimeType,
-      name: fileName,
-    } as any, {
-      contentType: mimeType,
-      cacheControl: '3600',
-    });
+  if (isWeb) {
+    // Web: convertir l'URI (blob URL) en Blob et uploader
+    const blob = await uriToBlob(uri);
+    const file = new File([blob], fileName, { type: mimeType });
+    const { data, error } = await supabase.storage
+      .from(BUCKETS[bucket])
+      .upload(filePath, file, {
+        contentType: mimeType,
+        cacheControl: '3600',
+      });
+    if (error) throw error;
+  } else {
+    // Mobile (React Native): objet { uri, type, name }
+    const { data, error } = await supabase.storage
+      .from(BUCKETS[bucket])
+      .upload(filePath, {
+        uri,
+        type: mimeType,
+        name: fileName,
+      } as any, {
+        contentType: mimeType,
+        cacheControl: '3600',
+      });
 
-  if (error) throw error;
+    if (error) throw error;
+  }
 
   const { data: urlData } = supabase.storage
     .from(BUCKETS[bucket])
