@@ -1,0 +1,267 @@
+// ============================================================
+// Couche d'abstraction Appels Audio/Vidéo — WebRTC
+// Web uniquement (plus de Zego native mobile)
+// ============================================================
+import { supabase } from './supabase';
+
+// ==========================================================
+// Types
+// ==========================================================
+export const ZegoViewMode = {
+  AspectFill: 0,
+  AspectFit: 1,
+} as const;
+
+export type ZegoStream = any;
+
+interface CallUser {
+  userID: string;
+  userName: string;
+}
+
+let onRemoteStreamUpdate: ((streams: any[], added: boolean) => void) | null = null;
+
+// ==========================================================
+// WebRTC Implementation
+// ==========================================================
+class WebRTCManager {
+  private pc: RTCPeerConnection | null = null;
+  private localStream: MediaStream | null = null;
+  private remoteStream: MediaStream | null = null;
+  private remoteStreamId: string | null = null;
+  private signalChannel: any = null;
+  private callId: string = '';
+  private isMuted: boolean = false;
+  private isSpeakerOn: boolean = false;
+
+  private iceServers: RTCIceServer[] = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ];
+
+  async joinRoom(roomID: string, user: CallUser): Promise<void> {
+    this.callId = roomID;
+
+    this.pc = new RTCPeerConnection({ iceServers: this.iceServers });
+
+    this.pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        this.sendSignal('ice-candidate', event.candidate);
+      }
+    };
+
+    this.pc.ontrack = (event) => {
+      if (!this.remoteStream) {
+        this.remoteStream = new MediaStream();
+      }
+      event.streams[0].getTracks().forEach(track => {
+        this.remoteStream!.addTrack(track);
+      });
+
+      const streamId = event.streams[0]?.id || 'remote';
+      this.remoteStreamId = streamId;
+      onRemoteStreamUpdate?.([{ streamID: streamId }], true);
+    };
+
+    this.pc.onconnectionstatechange = () => {
+      if (this.pc?.connectionState === 'disconnected' || this.pc?.connectionState === 'failed') {
+        onRemoteStreamUpdate?.([], false);
+      }
+    };
+
+    this.signalChannel = supabase.channel(`webrtc:${roomID}`);
+
+    this.signalChannel
+      .on('broadcast', { event: 'sdp-offer' }, ({ payload }: any) => this.handleOffer(payload))
+      .on('broadcast', { event: 'sdp-answer' }, ({ payload }: any) => this.handleAnswer(payload))
+      .on('broadcast', { event: 'ice-candidate' }, ({ payload }: any) => this.handleIceCandidate(payload));
+
+    await this.signalChannel.subscribe();
+  }
+
+  async startPublish(): Promise<void> {
+    try {
+      this.localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true,
+      });
+
+      this.localStream.getTracks().forEach(track => {
+        this.pc?.addTrack(track, this.localStream!);
+      });
+
+      const offer = await this.pc!.createOffer();
+      await this.pc!.setLocalDescription(offer);
+      await this.sendSignal('sdp-offer', { sdp: offer.sdp, type: offer.type });
+    } catch (err) {
+      console.error('[WebRTC] Erreur startPublish:', err);
+      throw err;
+    }
+  }
+
+  async handleOffer(payload: { sdp: string; type: string }): Promise<void> {
+    if (!this.pc) return;
+    await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
+
+    const answer = await this.pc.createAnswer();
+    await this.pc.setLocalDescription(answer);
+    await this.sendSignal('sdp-answer', { sdp: answer.sdp, type: answer.type });
+  }
+
+  async handleAnswer(payload: { sdp: string; type: string }): Promise<void> {
+    if (!this.pc) return;
+    await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
+  }
+
+  async handleIceCandidate(payload: any): Promise<void> {
+    if (!this.pc || !payload.candidate) return;
+    try {
+      await this.pc.addIceCandidate(new RTCIceCandidate(payload));
+    } catch (err) {
+      console.warn('[WebRTC] Erreur ajout ICE candidate:', err);
+    }
+  }
+
+  private async sendSignal(event: string, payload: any): Promise<void> {
+    if (!this.signalChannel) return;
+    await this.signalChannel.send({
+      type: 'broadcast',
+      event,
+      payload,
+    });
+  }
+
+  async leaveRoom(roomID?: string): Promise<void> {
+    await this.stopPublish();
+
+    if (this.pc) {
+      this.pc.close();
+      this.pc = null;
+    }
+
+    if (this.signalChannel) {
+      await supabase.removeChannel(this.signalChannel);
+      this.signalChannel = null;
+    }
+
+    this.remoteStream = null;
+    this.remoteStreamId = null;
+    this.callId = '';
+  }
+
+  async stopPublish(): Promise<void> {
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(t => t.stop());
+      this.localStream = null;
+    }
+  }
+
+  async startPlayingStream(streamID: string): Promise<void> {
+    // Web: le flux est déjà reçu via ontrack
+  }
+
+  async stopPlayingStream(streamID: string): Promise<void> {
+    if (this.remoteStream) {
+      this.remoteStream.getTracks().forEach(t => t.stop());
+      this.remoteStream = null;
+    }
+    this.remoteStreamId = null;
+  }
+
+  async toggleSpeaker(enabled: boolean): Promise<void> {
+    this.isSpeakerOn = enabled;
+    // Web: pas de contrôle de haut-parleur direct
+  }
+
+  async muteMicrophone(muted: boolean): Promise<void> {
+    this.isMuted = muted;
+    if (this.localStream) {
+      this.localStream.getAudioTracks().forEach(track => {
+        track.enabled = !muted;
+      });
+    }
+  }
+
+  getLocalStream(): MediaStream | null { return this.localStream; }
+  getRemoteStream(): MediaStream | null { return this.remoteStream; }
+  getRemoteStreamId(): string | null { return this.remoteStreamId; }
+  isAvailable(): boolean { return true; }
+}
+
+// ==========================================================
+// Instance singleton
+// ==========================================================
+let webRTCInstance: WebRTCManager | null = null;
+
+function getWebRTC(): WebRTCManager {
+  if (!webRTCInstance) webRTCInstance = new WebRTCManager();
+  return webRTCInstance;
+}
+
+// ==========================================================
+// API publique
+// ==========================================================
+
+export async function isZegoAvailable(): Promise<boolean> {
+  return true; // WebRTC toujours disponible
+}
+
+export function setPreviewView(view: any | undefined): void {
+  // No-op sur web
+}
+
+export function setRemoteView(view: any | undefined): void {
+  // No-op sur web
+}
+
+export function setOnRemoteStreamUpdate(cb: ((streams: any[], added: boolean) => void) | null): void {
+  onRemoteStreamUpdate = cb;
+}
+
+export async function joinRoom(roomID: string, user: CallUser): Promise<void> {
+  return getWebRTC().joinRoom(roomID, user);
+}
+
+export async function leaveRoom(roomID?: string): Promise<void> {
+  return getWebRTC().leaveRoom(roomID);
+}
+
+export async function startPublish(): Promise<void> {
+  return getWebRTC().startPublish();
+}
+
+export async function stopPublish(): Promise<void> {
+  return getWebRTC().stopPublish();
+}
+
+export async function startPlayingStream(streamID: string): Promise<void> {
+  return getWebRTC().startPlayingStream(streamID);
+}
+
+export async function stopPlayingStream(streamID: string): Promise<void> {
+  return getWebRTC().stopPlayingStream(streamID);
+}
+
+export async function toggleSpeaker(enabled: boolean): Promise<void> {
+  return getWebRTC().toggleSpeaker(enabled);
+}
+
+export async function muteMicrophone(muted: boolean): Promise<void> {
+  return getWebRTC().muteMicrophone(muted);
+}
+
+export async function destroy(): Promise<void> {
+  await getWebRTC().leaveRoom();
+  webRTCInstance = null;
+  onRemoteStreamUpdate = null;
+}
+
+// Exports spécifiques Web (pour la partie CallScreen)
+export function getWebRTCStreams(): { local: MediaStream | null; remote: MediaStream | null; remoteStreamId: string | null } {
+  if (!webRTCInstance) return { local: null, remote: null, remoteStreamId: null };
+  return {
+    local: webRTCInstance.getLocalStream(),
+    remote: webRTCInstance.getRemoteStream(),
+    remoteStreamId: webRTCInstance.getRemoteStreamId(),
+  };
+}

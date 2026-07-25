@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+  }
+
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior: none;
+  }
+
+  /* Scrollbar style */
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(107, 79, 107, 0.3);
+    border-radius: 2px;
+  }
+
+  /* Safe area padding */
+  .safe-top {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* Prevent text selection on UI elements */
+  .no-select {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}
+
+@layer components {
+  /* Animated pulse ring (call screen) */
+  .pulsing-ring {
+    @apply absolute rounded-full border-2;
+  }
+
+  /* Chat bubbles */
+  .bubble-self {
+    @apply rounded-2xl rounded-br-sm px-4 py-2.5 max-w-[78%];
+  }
+  .bubble-other {
+    @apply rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[78%];
+  }
+
+  /* Keypad button */
+  .keypad-btn {
+    @apply w-20 h-20 rounded-full flex items-center justify-center text-2xl font-semibold
+           bg-white/80 text-text active:scale-90 transition-transform duration-150;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+}

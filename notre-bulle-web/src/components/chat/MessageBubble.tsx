@@ -1,0 +1,189 @@
+// ============================================================
+// Bulle de message — Texte / Image / Voice / Quoted reply
+// Design premium, secondes, statuts (envoyé/distribué/lu)
+// ============================================================
+import { motion } from 'framer-motion';
+import { colors, spacing, borderRadius } from '../../constants/theme';
+import { VoiceNoteBubble } from '../media/VoiceNoteBubble';
+import { getMediaUrl, getMediaType } from '../../lib/media';
+import { DoubleCheckIcon, ReplyIcon } from '../Icons';
+import type { MessageWithDetails } from '../../types/database';
+
+interface MessageBubbleProps {
+  message: MessageWithDetails;
+  isOwn: boolean;
+  index?: number;
+  bubbleSelfColor?: string;
+  bubbleOtherColor?: string;
+}
+
+function formatTime(createdAt: string): string {
+  return new Date(createdAt).toLocaleTimeString('fr-FR', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function MessageStatus({ statuses, myProfileId }: { statuses: any[]; myProfileId: string | null }) {
+  if (!statuses || statuses.length === 0) return null;
+
+  const partnerStatuses = myProfileId
+    ? statuses.filter((s) => s.profile_id !== myProfileId)
+    : statuses;
+
+  if (partnerStatuses.length === 0) return null;
+
+  const statusOrder = ['sent', 'delivered', 'read'];
+  const highestStatus = partnerStatuses.reduce((max, s) => {
+    return statusOrder.indexOf(s.status) > statusOrder.indexOf(max.status) ? s : max;
+  }, partnerStatuses[0]);
+
+  if (highestStatus.status === 'sent') {
+    return <DoubleCheckIcon size={14} color="rgba(255,255,255,0.4)" />;
+  }
+  if (highestStatus.status === 'delivered') {
+    return <DoubleCheckIcon size={14} color="rgba(255,255,255,0.6)" />;
+  }
+  if (highestStatus.status === 'read') {
+    return <DoubleCheckIcon size={14} color={colors.accent} />;
+  }
+  return null;
+}
+
+function QuotedMessage({ replyTo, isOwn }: { replyTo: NonNullable<MessageWithDetails['reply_to_message']>; isOwn: boolean }) {
+  const previewText = replyTo.content
+    ? replyTo.content
+    : replyTo.type === 'image' ? 'Photo'
+    : replyTo.type === 'voice' ? 'Message vocal'
+    : replyTo.type === 'video' ? 'Vidéo'
+    : 'Media';
+
+  return (
+    <div style={{
+      borderLeft: `3px solid ${isOwn ? 'rgba(255,255,255,0.5)' : colors.primary}`,
+      marginBottom: spacing.sm,
+      borderRadius: borderRadius.sm,
+      overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: `${spacing.sm}px ${spacing.md}px`,
+        backgroundColor: isOwn ? 'rgba(255,255,255,0.08)' : 'rgba(124,45,18,0.06)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+          <ReplyIcon size={10} color={isOwn ? 'rgba(255,255,255,0.7)' : colors.primary} />
+          <span style={{
+            fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3,
+            color: isOwn ? 'rgba(255,255,255,0.7)' : colors.primary,
+          }}>
+            Réponse
+          </span>
+        </div>
+        <span style={{
+          fontSize: 13, lineHeight: '17px',
+          color: isOwn ? 'rgba(255,255,255,0.75)' : colors.textSecondary,
+          display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+        }}>
+          {previewText}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+export function MessageBubble({ message, isOwn, index = 0, bubbleSelfColor, bubbleOtherColor }: MessageBubbleProps) {
+  const attachments = message.attachments || [];
+  const hasAttachment = attachments.length > 0;
+  const attachment = attachments[0];
+
+  const selfColor = bubbleSelfColor || colors.bubbleSelf;
+  const otherColor = bubbleOtherColor || colors.bubbleOther;
+  const hasReply = !!message.reply_to_message;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, delay: Math.min(index * 0.03, 0.2) }}
+      style={{
+        display: 'flex',
+        justifyContent: isOwn ? 'flex-end' : 'flex-start',
+        marginBottom: spacing.sm,
+        padding: `0 ${spacing.lg}px`,
+      }}
+    >
+      <div style={{
+        maxWidth: '78%',
+        backgroundColor: isOwn ? selfColor : otherColor,
+        padding: `${spacing.md}px ${spacing.lg}px`,
+        borderRadius: borderRadius.lg,
+        borderBottomRightRadius: isOwn ? borderRadius.sm : borderRadius.lg,
+        borderBottomLeftRadius: !isOwn ? borderRadius.sm : borderRadius.lg,
+        border: !isOwn ? `1px solid ${colors.borderLight}` : undefined,
+        boxShadow: `0 2px 6px ${isOwn ? colors.glowBurgundy : colors.shadow}`,
+      }}>
+        {/* Quoted message (reply) */}
+        {hasReply && message.reply_to_message && (
+          <QuotedMessage replyTo={message.reply_to_message} isOwn={isOwn} />
+        )}
+
+        {/* Image */}
+        {hasAttachment && getMediaType(attachment.mime_type) === 'image' && (
+          <div style={{
+            margin: `-${spacing.lg}px`,
+            marginBottom: spacing.sm,
+            borderTopLeftRadius: borderRadius.lg,
+            borderTopRightRadius: borderRadius.lg,
+            overflow: 'hidden',
+          }}>
+            <img
+              src={getMediaUrl(attachment.storage_path)}
+              alt="Media"
+              style={{ width: 240, height: 200, objectFit: 'cover', display: 'block' }}
+              loading="lazy"
+            />
+          </div>
+        )}
+
+        {/* Voice Note */}
+        {hasAttachment && getMediaType(attachment.mime_type) === 'audio' && (
+          <VoiceNoteBubble
+            storagePath={attachment.storage_path}
+            durationMs={attachment.duration_ms || 0}
+            isOwn={isOwn}
+            bubbleSelfColor={selfColor}
+          />
+        )}
+
+        {/* Texte */}
+        {message.content && (
+          <span style={{
+            fontSize: 16, lineHeight: '22px',
+            color: isOwn ? colors.bubbleSelfText : colors.text,
+          }}>
+            {message.content}
+          </span>
+        )}
+
+        {/* Heure + Statut */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: isOwn ? 'flex-end' : 'flex-start',
+          gap: 4,
+          marginTop: 4,
+        }}>
+          <span style={{
+            fontSize: 11,
+            color: isOwn ? 'rgba(255,255,255,0.6)' : colors.textTertiary,
+          }}>
+            {formatTime(message.created_at)}
+          </span>
+          {isOwn && (
+            <MessageStatus statuses={message.statuses} myProfileId={null} />
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+}

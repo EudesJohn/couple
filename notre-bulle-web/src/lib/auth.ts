@@ -1,0 +1,47 @@
+// ============================================================
+// Auth — PIN uniquement
+// Hachage SHA-256 via Web Crypto API (pas de biométrie sur web)
+// Stockage localStorage
+// ============================================================
+
+const STORE_KEYS = {
+  PIN_HASH: 'notre-bulle.pin-hash',
+  IS_SETUP_DONE: 'notre-bulle.setup-done',
+} as const;
+
+// --- Hachage PIN (SHA-256 via Web Crypto API) ---
+export async function hashPin(pin: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(`notre-bulle-salt-${pin}`);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function verifyPin(pin: string, hash: string): Promise<boolean> {
+  const computed = await hashPin(pin);
+  return computed === hash;
+}
+
+// --- Stockage sécurisé du PIN ---
+export async function savePinHash(hash: string): Promise<void> {
+  localStorage.setItem(STORE_KEYS.PIN_HASH, hash);
+}
+
+export async function getStoredPinHash(): Promise<string | null> {
+  return localStorage.getItem(STORE_KEYS.PIN_HASH);
+}
+
+// --- Flag setup terminé ---
+export async function markSetupDone(): Promise<void> {
+  localStorage.setItem(STORE_KEYS.IS_SETUP_DONE, 'true');
+}
+
+export async function isSetupDone(): Promise<boolean> {
+  return localStorage.getItem(STORE_KEYS.IS_SETUP_DONE) === 'true';
+}
+
+// --- Vérifier si le code PIN a déjà été défini ---
+export async function isPinSet(): Promise<boolean> {
+  return (await getStoredPinHash()) !== null;
+}
