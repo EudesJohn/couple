@@ -209,7 +209,12 @@ export function useMessages(): UseMessagesReturn {
               }, { onConflict: 'message_id,profile_id' });
 
               const senderName = fullMsg.sender?.display_name || 'Partenaire';
-              const content = fullMsg.type === 'text' ? fullMsg.content : null;
+              const content = fullMsg.type === 'text'
+                ? fullMsg.content
+                : fullMsg.type === 'image' ? 'Photo'
+                : fullMsg.type === 'voice' ? 'Message vocal'
+                : fullMsg.type === 'video' ? 'Vidéo'
+                : null;
               await notifyNewMessage(senderName, content, convId);
             } catch {
               // Silencieux
