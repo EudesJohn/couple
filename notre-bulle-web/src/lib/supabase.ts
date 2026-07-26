@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../constants/config';
+import { cacheProfile, getCachedProfile, clearProfileCache } from './cache';
 
 // ============================================================
 // Client Supabase — création sécurisée
@@ -88,13 +89,32 @@ function createChannelStub() {
 // ==========================================================
 
 export async function getCurrentProfile() {
+  // Cache localStorage d'abord
+  const cached = getCachedProfile();
+  if (cached) return cached;
+
   try {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-    const { data } = await supabase.from('profiles').select('*').eq('supabase_uid', user.id).maybeSingle();
+    if (user) {
+      const { data } = await supabase.from('profiles').select('*').eq('supabase_uid', user.id).maybeSingle();
+      if (data) cacheProfile(data);
+      return data;
+    }
+  } catch { /* fallback silencieux */ }
+
+  // Fallback : pas de session Auth Supabase → utiliser l'ID de la config
+  // (l'app utilise le PIN localStorage, pas Supabase Auth)
+  try {
+    const profileId = config.myProfileId;
+    if (!profileId) return null;
+    const { data } = await supabase.from('profiles').select('*').eq('id', profileId).maybeSingle();
+    if (data) cacheProfile(data);
     return data;
   } catch { return null; }
 }
+
+// Export de la fonction d'invalidation du cache profil
+export { clearProfileCache } from './cache';
 
 export async function uploadFile(bucket: string, path: string, file: Blob | Uint8Array | ArrayBuffer, contentType: string) {
   const { data, error } = await supabase.storage.from(bucket).upload(path, file, { contentType });

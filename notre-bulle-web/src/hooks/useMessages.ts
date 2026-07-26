@@ -11,6 +11,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { uploadMedia, compressImage } from '../lib/media';
 import { config } from '../constants/config';
+import { cacheMessages, getCachedMessages, addCachedMessage } from '../lib/cache';
 import { notifyNewMessage } from './useNotifications';
 import type { MessageWithDetails, Message, MessageType, Attachment, MessageStatus } from '../types/database';
 
@@ -87,7 +88,17 @@ export function useMessages(): UseMessagesReturn {
 
       const loadedConvId = convData.id;
 
-      // 3. Charger les messages
+      // 3a. Cache local d'abord — affichage instantané
+      try {
+        const cached = await getCachedMessages(loadedConvId);
+        if (mounted && cached.length > 0) {
+          setMessages(cached);
+        }
+      } catch {
+        // Le cache peut échouer silencieusement (IndexedDB désactivé, etc.)
+      }
+
+      // 3b. Synchronisation Supabase en arrière-plan
       try {
         const { data, error: msgError } = await supabase
           .from('messages')
@@ -104,7 +115,10 @@ export function useMessages(): UseMessagesReturn {
 
         if (mounted) {
           if (data) {
-            setMessages(data as unknown as MessageWithDetails[]);
+            const fetched = data as unknown as MessageWithDetails[];
+            setMessages(fetched);
+            // Mettre à jour le cache avec les données fraîches
+            cacheMessages(loadedConvId, fetched).catch(() => {});
           }
           if (msgError) {
             console.warn('Erreur chargement messages:', msgError.message);
@@ -181,6 +195,9 @@ export function useMessages(): UseMessagesReturn {
             if (prev.some((m) => m.id === fullMsg.id)) return prev;
             return [...prev, fullMsg];
           });
+
+          // Mettre en cache le nouveau message pour les prochains montages
+          addCachedMessage(fullMsg).catch(() => {});
 
           // Notification si message du partenaire
           const isOwn = fullMsg.sender_id === myProfileIdRef.current;

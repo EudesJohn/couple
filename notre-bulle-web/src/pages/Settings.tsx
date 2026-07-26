@@ -10,6 +10,7 @@ import { supabase } from '../lib/supabase';
 import { hashPin, savePinHash, verifyPin, getStoredPinHash } from '../lib/auth';
 import { getTheme, saveTheme, saveBackgroundImage, removeBackgroundImage, getBackgroundImage, type ChatTheme } from '../lib/settings';
 import { compressImage, downloadMedia } from '../lib/media';
+import { clearProfileCache } from '../lib/cache';
 import { config } from '../constants/config';
 import {
   BackIcon, SettingsIcon, HeartFilledIcon, UserIcon, LockIcon,
@@ -226,6 +227,7 @@ export default function SettingsScreen() {
         .eq('id', userId);
       if (error) throw error;
       setDisplayName(newDisplayName.trim());
+      clearProfileCache();
       showToast('Pseudo modifié');
     } catch (err: any) {
       showAlert('error', 'Erreur', err?.message || 'Impossible de modifier le pseudo');
@@ -333,6 +335,7 @@ export default function SettingsScreen() {
         .eq('id', userId);
       if (updateError) throw updateError;
       setAvatar(storagePath);
+      clearProfileCache();
       setPhotoPreview(null);
       showToast('Photo mise à jour');
     } catch (err: any) {
