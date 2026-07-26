@@ -11,7 +11,7 @@ import { hashPin, savePinHash, verifyPin, getStoredPinHash } from '../lib/auth';
 import { getTheme, saveTheme, saveBackgroundImage, removeBackgroundImage, getBackgroundImage, type ChatTheme } from '../lib/settings';
 import { compressImage, downloadMedia } from '../lib/media';
 import { clearProfileCache } from '../lib/cache';
-import { config } from '../constants/config';
+import { getMyProfileId } from '../lib/profile';
 import {
   BackIcon, SettingsIcon, HeartFilledIcon, UserIcon, LockIcon,
   EditIcon, CameraIcon, CheckIcon, CloseIcon, ImageIcon,
@@ -127,7 +127,7 @@ export default function SettingsScreen() {
 
   // Get profile ID (pas de session Supabase, on utilise la config)
   const getUserId = useCallback(async (): Promise<string | null> => {
-    return config.myProfileId ?? null;
+    return getMyProfileId() || null;
   }, []);
 
   // Load profile

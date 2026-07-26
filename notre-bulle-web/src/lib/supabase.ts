@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../constants/config';
 import { cacheProfile, getCachedProfile, clearProfileCache } from './cache';
+import { getMyProfileId } from './profile';
 
 // ============================================================
 // Client Supabase — création sécurisée
@@ -105,7 +106,7 @@ export async function getCurrentProfile() {
   // Fallback : pas de session Auth Supabase → utiliser l'ID de la config
   // (l'app utilise le PIN localStorage, pas Supabase Auth)
   try {
-    const profileId = config.myProfileId;
+    const profileId = getMyProfileId();
     if (!profileId) return null;
     const { data } = await supabase.from('profiles').select('*').eq('id', profileId).maybeSingle();
     if (data) cacheProfile(data);

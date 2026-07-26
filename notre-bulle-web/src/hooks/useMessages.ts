@@ -10,8 +10,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { uploadMedia, compressImage } from '../lib/media';
-import { config } from '../constants/config';
 import { cacheMessages, getCachedMessages, addCachedMessage } from '../lib/cache';
+import { getMyProfileId as getProfileId } from '../lib/profile';
 import { notifyNewMessage } from './useNotifications';
 import type { MessageWithDetails, Message, MessageType, Attachment, MessageStatus } from '../types/database';
 
@@ -47,7 +47,7 @@ export function useMessages(): UseMessagesReturn {
   const getMyProfileId = useCallback(async (): Promise<string | null> => {
     if (myProfileIdRef.current) return myProfileIdRef.current;
 
-    const id = config.myProfileId;
+    const id = getProfileId();
     if (id) {
       myProfileIdRef.current = id;
       setMyProfileId(id);
@@ -263,7 +263,7 @@ export function useMessages(): UseMessagesReturn {
     attachmentData?: { storage_path: string; mime_type: string; file_size?: number; duration_ms?: number; width?: number; height?: number },
     replyToId?: string | null,
   ): Promise<boolean> => {
-    const profileId = myProfileId || config.myProfileId;
+    const profileId = myProfileId || getProfileId();
     if (!convId || !profileId) return false;
 
     // Insérer dans Supabase

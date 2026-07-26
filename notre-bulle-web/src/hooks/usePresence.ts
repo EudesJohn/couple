@@ -7,10 +7,10 @@
 // RealtimeClient.channel() (qui ne retire pas les channels de
 // this.channels[] après removeChannel/teardown)
 // ============================================================
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import type { Presence } from '../types/database';
-import { config } from '../constants/config';
+import { getMyProfileId, getPartnerProfileId } from '../lib/profile';
 
 interface UsePresenceReturn {
   partnerPresence: Presence | null;
@@ -27,8 +27,8 @@ export function usePresence(): UsePresenceReturn {
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const profileIdRef = useRef<string | null>(null);
 
-  const MY_PROFILE_ID = config.myProfileId;
-  const PARTNER_PROFILE_ID = config.partnerProfileId;
+  const MY_PROFILE_ID = getMyProfileId();
+  const PARTNER_PROFILE_ID = getPartnerProfileId();
 
   // Initialiser le ref d'ID profil
   useEffect(() => {
