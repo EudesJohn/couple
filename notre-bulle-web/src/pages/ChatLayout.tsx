@@ -8,16 +8,17 @@ import { motion } from 'framer-motion';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { usePresence } from '../hooks/usePresence';
 import { useCall } from '../hooks/useCall';
+import { useAuth } from '../hooks/useAuth';
 import { PhoneIcon, VideoIcon, SettingsIcon, HeartFilledIcon } from '../components/Icons';
 import { CallTypeSheet } from '../components/call/CallTypeSheet';
 import { IncomingCallBanner } from '../components/call/IncomingCallBanner';
-
-const PARTNER_NAME = 'Ma chérie';
 
 export default function ChatLayout() {
   const navigate = useNavigate();
   const { isPartnerOnline, partnerPresence } = usePresence();
   const { startCall, incomingCall, answerCall, rejectCall, callState } = useCall();
+  const { identity } = useAuth();
+  const PARTNER_NAME = identity === 'woman' ? 'Mon chéri' : 'Ma chérie';
   const isTyping = partnerPresence?.is_typing ?? false;
   const [callSheetVisible, setCallSheetVisible] = useState(false);
 

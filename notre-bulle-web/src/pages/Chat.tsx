@@ -52,7 +52,7 @@ function DateSeparator({ date }: { date: string }) {
 
 export default function ChatScreen() {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { messages, sendText, sendVoice, sendImage, sendVideo, isLoading, isUploading, uploadProgress, error } = useMessages();
+  const { messages, sendText, sendVoice, sendImage, sendVideo, isLoading, isUploading, uploadProgress, myProfileId, error } = useMessages();
   const { setIsTyping, partnerPresence } = usePresence();
   const { pickImage, takePhoto, pickVideo } = useMediaPicker();
   const { bubbleSelf, bubbleOther, bg, backgroundImage } = useTheme();
@@ -286,7 +286,7 @@ export default function ChatScreen() {
               return <DateSeparator key={`date-${i}`} date={item.data} />;
             }
             const msg = item.data as MessageWithDetails;
-            const isOwn = msg.sender_id === msg.sender?.id;
+            const isOwn = msg.sender_id === myProfileId;
 
             return (
               <div key={msg.id} style={{ cursor: 'pointer' }}>
