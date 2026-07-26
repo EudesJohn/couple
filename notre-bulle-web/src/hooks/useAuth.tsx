@@ -5,11 +5,13 @@
 // ============================================================
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import {
-  isPinSet, getStoredPinHash, verifyPin,
-  hashPin, savePinHash, markSetupDone,
+  isPinSet, verifyPin,
+  hashPin, savePinHashForRole, markSetupDone,
   isFirstLaunch, saveIdentity, getIdentity,
+  getStoredPinHashForRole,
   PRESET_CODES, type UserIdentity,
 } from '../lib/auth';
+import { clearProfileCache } from '../lib/cache';
 
 interface AuthState {
   isLocked: boolean;
@@ -54,14 +56,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = await isPinSet();
     if (!stored) return false;
 
-    const hash = await getStoredPinHash();
-    if (!hash) return false;
+    // Essayer chaque rôle (femme → homme)
+    for (const role of ['woman', 'man'] as UserIdentity[]) {
+      const hash = await getStoredPinHashForRole(role);
+      if (!hash) continue;
 
-    const valid = await verifyPin(pin, hash);
-    if (valid) {
-      setIsLocked(false);
-      return true;
+      const valid = await verifyPin(pin, hash);
+      if (valid) {
+        // Identité détectée → mettre à jour
+        await saveIdentity(role);
+        await markSetupDone();
+        setIdentity(role);
+        clearProfileCache();
+        setIsLocked(false);
+        return true;
+      }
     }
+
     return false;
   }, []);
 
@@ -76,9 +87,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     else if (pin === PRESET_CODES.MAN) role = 'man';
     else return null;
 
-    // Hacher le PIN + stocker
+    // Hacher le PIN + stocker (par rôle)
+    clearProfileCache();
     const hash = await hashPin(pin);
-    await savePinHash(hash);
+    await savePinHashForRole(role, hash);
     await saveIdentity(role);
     await markSetupDone();
 

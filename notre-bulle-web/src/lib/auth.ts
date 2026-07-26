@@ -14,6 +14,7 @@ export const PRESET_CODES = {
 
 const STORE_KEYS = {
   PIN_HASH: 'notre-bulle.pin-hash',
+  PIN_HASH_MAN: 'notre-bulle.pin-hash-man',
   IS_SETUP_DONE: 'notre-bulle.setup-done',
   IDENTITY: 'notre-bulle.identity',
 } as const;
@@ -52,7 +53,23 @@ export async function isSetupDone(): Promise<boolean> {
 
 // --- Vérifier si le code PIN a déjà été défini ---
 export async function isPinSet(): Promise<boolean> {
-  return (await getStoredPinHash()) !== null;
+  const womanHash = localStorage.getItem(STORE_KEYS.PIN_HASH);
+  const manHash = localStorage.getItem(STORE_KEYS.PIN_HASH_MAN);
+  return womanHash !== null || manHash !== null;
+}
+
+// --- Stockage PIN par rôle ---
+export async function savePinHashForRole(role: UserIdentity, hash: string): Promise<void> {
+  if (role === 'woman') {
+    localStorage.setItem(STORE_KEYS.PIN_HASH, hash);
+  } else {
+    localStorage.setItem(STORE_KEYS.PIN_HASH_MAN, hash);
+  }
+}
+
+export async function getStoredPinHashForRole(role: UserIdentity): Promise<string | null> {
+  const key = role === 'woman' ? STORE_KEYS.PIN_HASH : STORE_KEYS.PIN_HASH_MAN;
+  return localStorage.getItem(key);
 }
 
 // ==========================================================
