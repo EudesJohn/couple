@@ -68,8 +68,32 @@ export async function savePinHashForRole(role: UserIdentity, hash: string): Prom
 }
 
 export async function getStoredPinHashForRole(role: UserIdentity): Promise<string | null> {
-  const key = role === 'woman' ? STORE_KEYS.PIN_HASH : STORE_KEYS.PIN_HASH_MAN;
-  return localStorage.getItem(key);
+  // Toujours essayer la clé explicite du rôle d'abord
+  if (role === 'man') {
+    const manHash = localStorage.getItem(STORE_KEYS.PIN_HASH_MAN);
+    if (manHash) return manHash;
+  }
+
+  // Logique de migration : l'ancienne clé PIN_HASH (notre-bulle.pin-hash)
+  // a été écrite par la 1ʳᵉ configuration — elle appartient donc à
+  // l'identité stockée dans notrebulle.identity
+  const storedIdentity = await getIdentity();
+
+  if (role === 'woman') {
+    // La clé historique est celle de la femme UNIQUEMENT si l'identité
+    // stockée est 'woman' (sinon elle appartient à l'homme)
+    if (storedIdentity === 'woman') return localStorage.getItem(STORE_KEYS.PIN_HASH);
+    return null;
+  }
+
+  if (role === 'man') {
+    // Migration : si l'identité stockée est 'man', la clé historique
+    // contient en réalité le hash de l'homme
+    if (storedIdentity === 'man') return localStorage.getItem(STORE_KEYS.PIN_HASH);
+    return null;
+  }
+
+  return null;
 }
 
 // ==========================================================

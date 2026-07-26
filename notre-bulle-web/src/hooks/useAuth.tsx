@@ -57,6 +57,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!stored) return false;
 
     // Essayer chaque rôle (femme → homme)
+    // getStoredPinHashForRole tient compte de la migration :
+    // l'ancienne clé unique PIN_HASH est attribuée au rôle qui
+    // a fait la 1ʳᵉ configuration (via notre-bulle.identity)
     for (const role of ['woman', 'man'] as UserIdentity[]) {
       const hash = await getStoredPinHashForRole(role);
       if (!hash) continue;
@@ -67,6 +70,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await saveIdentity(role);
         await markSetupDone();
         setIdentity(role);
+        clearProfileCache();
+        setIsLocked(false);
+        return true;
+      }
+    }
+
+    // Aucun hash existant n'a matché → peut-être que c'est la 1ʳᵉ
+    // connexion de l'autre personne (ex: femme arrive après que
+    // l'homme ait configuré l'app). On vérifie si c'est un code
+    // préréglé valide pour un rôle qui n'a pas encore de hash.
+    if (pin === PRESET_CODES.WOMAN) {
+      const womanHash = await getStoredPinHashForRole('woman');
+      if (!womanHash) {
+        // La femme n'a pas encore de hash → auto-setup
+        const newHash = await hashPin(pin);
+        await savePinHashForRole('woman', newHash);
+        await saveIdentity('woman');
+        await markSetupDone();
+        setIdentity('woman');
+        clearProfileCache();
+        setIsLocked(false);
+        return true;
+      }
+    }
+    if (pin === PRESET_CODES.MAN) {
+      const manHash = await getStoredPinHashForRole('man');
+      if (!manHash) {
+        // L'homme n'a pas encore de hash → auto-setup
+        const newHash = await hashPin(pin);
+        await savePinHashForRole('man', newHash);
+        await saveIdentity('man');
+        await markSetupDone();
+        setIdentity('man');
         clearProfileCache();
         setIsLocked(false);
         return true;
