@@ -20,6 +20,10 @@ import {
 import type { Call, CallType } from '../types/database';
 import { notifyIncomingCall, notifyMissedCall } from './useNotifications';
 
+// Compteur pour noms de channel uniques (contourne le bug RealtimeClient.channel()
+// qui ne libère pas les channels après removeChannel)
+let callChannelMountId = 0;
+
 type CallStateType = 'idle' | 'calling' | 'ringing' | 'connecting' | 'connected' | 'ended';
 
 // Garde-fou module-level : les deux instances (ChatLayout / CallScreen) reçoivent les
@@ -237,8 +241,9 @@ export function useCall(): UseCallReturn {
   // REALTIME — écouter les mutations sur la table calls
   // ============================================================
   useEffect(() => {
+    const mid = ++callChannelMountId;
     const channel = supabase
-      .channel('calls:live')
+      .channel(`calls:live:${mid}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'calls' },
@@ -277,9 +282,16 @@ export function useCall(): UseCallReturn {
             if (callStateRef.current === 'ringing' || callStateRef.current === 'idle') {
               notifyMissedCall(partnerRef.current?.name || 'Partenaire', callType);
             }
+            // Nettoyer les ressources WebRTC (media, PC, signal channel)
+            setOnRemoteStreamUpdate(null);
+            setOnConnectionStateChange(null);
+            await stopPublish().catch(() => {});
+            await leaveRoom(updated.id).catch(() => {});
+            stopCallTimer();
+            currentCallIdRef.current = null;
+            _zegoInitializedCallId = null;
             setCallState('ended');
             setTimeout(() => setCallState('idle'), 2000);
-            currentCallIdRef.current = null;
           }
         }
       )
