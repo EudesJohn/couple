@@ -120,6 +120,24 @@ export function useCall(): UseCallReturn {
 
   // ─── Init WebRTC (partagé entre caller et callee) ───
   const initZegoCall = useCallback(async (callId: string, type: CallType, isOfferer: boolean) => {
+    // Le profil peut ne pas être chargé quand le URL-init de CallScreen s'exécute
+    // (l'effet de chargement du profil est async). On le charge ici si besoin.
+    if (!profileRef.current) {
+      const p = await getCurrentProfile();
+      if (!p) return;
+      profileRef.current = { id: p.id, name: p.display_name };
+      if (partnerRef.current === null) {
+        const { data: partners } = await supabase
+          .from('profiles')
+          .select('id, display_name')
+          .neq('id', p.id)
+          .limit(1);
+        if (partners?.[0]) {
+          partnerRef.current = { id: partners[0].id, name: partners[0].display_name };
+        }
+      }
+    }
+
     const me = profileRef.current;
     if (!me) return;
 
