@@ -22,7 +22,6 @@ interface UseMessagesReturn {
   sendText: (content: string, replyToId?: string) => Promise<void>;
   sendVoice: (uri: string, durationMs: number) => Promise<void>;
   sendImage: (uri: string, mimeType: string, width: number, height: number) => Promise<void>;
-  sendVideo: (uri: string, mimeType: string, width: number, height: number, durationMs?: number) => Promise<void>;
   isLoading: boolean;
   isUploading: boolean;
   uploadProgress: number | null;
@@ -199,9 +198,9 @@ export function useMessages(): UseMessagesReturn {
           // Mettre en cache le nouveau message pour les prochains montages
           addCachedMessage(fullMsg).catch(() => {});
 
-          // Notification si message du partenaire
+          // Notification si message du partenaire (sauf journaux d'appel)
           const isOwn = fullMsg.sender_id === myProfileIdRef.current;
-          if (!isOwn && myProfileIdRef.current) {
+          if (!isOwn && myProfileIdRef.current && fullMsg.type !== 'call') {
             try {
               await supabase.from('message_status').upsert({
                 message_id: fullMsg.id,
@@ -384,7 +383,7 @@ export function useMessages(): UseMessagesReturn {
   }, [createMessage]);
 
   return {
-    messages, sendText, sendVoice, sendImage, sendVideo,
+    messages, sendText, sendVoice, sendImage,
     isLoading, isUploading, uploadProgress, myProfileId, error,
   };
 }

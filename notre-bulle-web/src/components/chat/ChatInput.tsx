@@ -17,7 +17,6 @@ interface ChatInputProps {
   onSendVoice: (uri: string, durationMs: number) => void;
   onSendImage: () => void;
   onTakePhoto: () => void;
-  onSendVideo: () => void;
   onTypingChange?: (isTyping: boolean) => void;
   replyTo?: MessageWithDetails | null;
   onCancelReply?: () => void;
@@ -28,7 +27,6 @@ export function ChatInput({
   onSendVoice,
   onSendImage,
   onTakePhoto,
-  onSendVideo,
   onTypingChange,
   replyTo,
   onCancelReply,
@@ -229,7 +227,6 @@ export function ChatInput({
         onClose={handleCloseMedia}
         onTakePhoto={onTakePhoto}
         onPickImage={onSendImage}
-        onPickVideo={onSendVideo}
       />
     </>
   );

@@ -14,6 +14,8 @@ import {
   joinRoom, leaveRoom, startPublish, stopPublish,
   toggleSpeaker, muteMicrophone,
   startPlayingStream, stopPlayingStream, setOnRemoteStreamUpdate,
+  setOnConnectionStateChange,
+  createOffer,
 } from '../lib/zego';
 import type { Call, CallType } from '../types/database';
 import { notifyIncomingCall } from './useNotifications';
@@ -21,8 +23,27 @@ import { notifyIncomingCall } from './useNotifications';
 type CallStateType = 'idle' | 'calling' | 'ringing' | 'connecting' | 'connected' | 'ended';
 
 // Garde-fou module-level : les deux instances (ChatLayout / CallScreen) reçoivent les
-// mêmes événements Realtime. Une seule doit initialiser WebRTC.
-let _initializingCallId: string | null = null;
+// mêmes événements Realtime. On garde un traceur pour la connexion WebRTC mais on ne
+// bloque pas : les opérations dans zego.ts sont idempotentes (joinRoom, startPublish,
+// createOffer avec flag offerSent), donc les deux instances peuvent appeler initZegoCall
+// sans risque de double initialisation.
+let _zegoInitializedCallId: string | null = null;
+
+// Événement module-level pour synchroniser l'état 'connected' entre toutes les instances
+// de useCall (ChatLayout + CallScreen). Une seule instance initie WebRTC (via le garde-fou
+// ci-dessus), mais toutes doivent passer à callState = 'connected'.
+let _connectedListeners: Array<() => void> = [];
+
+function onCallConnected(cb: () => void): () => void {
+  _connectedListeners.push(cb);
+  return () => {
+    _connectedListeners = _connectedListeners.filter(l => l !== cb);
+  };
+}
+
+function emitCallConnected(): void {
+  _connectedListeners.forEach(cb => cb());
+}
 
 interface UseCallReturn {
   callState: CallStateType;
@@ -54,6 +75,8 @@ export function useCall(): UseCallReturn {
   const currentCallIdRef = useRef<string | null>(null);
   const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const remoteStreamIdRef = useRef<string | null>(null);
+  const callStateRef = useRef<CallStateType>(callState);
+  callStateRef.current = callState;
 
   // ─── Charger les profils ───
   useEffect(() => {
@@ -78,6 +101,7 @@ export function useCall(): UseCallReturn {
   // ─── Timer ───
   const startCallTimer = useCallback(() => {
     setCallDuration(0);
+    if (callTimerRef.current) return; // déjà un timer en cours (évite le double appel)
     callTimerRef.current = setInterval(() => setCallDuration((p) => p + 1), 1000);
   }, []);
 
@@ -91,36 +115,89 @@ export function useCall(): UseCallReturn {
   useEffect(() => () => stopCallTimer(), [stopCallTimer]);
 
   // ─── Init WebRTC (partagé entre caller et callee) ───
-  const initZegoCall = useCallback(async (callId: string, type: CallType) => {
-    // Éviter que les deux instances n'initient WebRTC en parallèle
-    if (_initializingCallId === callId) return;
-    _initializingCallId = callId;
-
+  const initZegoCall = useCallback(async (callId: string, type: CallType, isOfferer: boolean) => {
     const me = profileRef.current;
     if (!me) return;
 
-    try {
-      await joinRoom(callId, { userID: me.id, userName: me.name });
+    const alreadyInit = _zegoInitializedCallId === callId;
 
-      setOnRemoteStreamUpdate((streams, added) => {
-        if (added && streams.length > 0) {
-          const sid = streams[0].streamID;
-          remoteStreamIdRef.current = sid;
-          startPlayingStream(sid).catch((err) =>
-            console.error('Erreur lecture flux distant:', err)
-          );
+    // Toujours installer les callbacks, quelle que soit la branche,
+    // pour que la 2e instance (p. ex. CallScreen après ChatLayout) ait
+    // ses propres handlers de connexion et de flux distant.
+    setOnConnectionStateChange((state) => {
+      if (state === 'disconnected' || state === 'failed') {
+        setCallState('ended');
+        setTimeout(() => setCallState('idle'), 2000);
+      }
+    });
+
+    setOnRemoteStreamUpdate((streams, added) => {
+      if (added && streams.length > 0) {
+        const sid = streams[0].streamID;
+        remoteStreamIdRef.current = sid;
+        startPlayingStream(sid).catch((err) =>
+          console.error('Erreur lecture flux distant:', err)
+        );
+      }
+    });
+
+    if (!alreadyInit) {
+      // Première instance à initialiser WebRTC pour ce call
+      _zegoInitializedCallId = callId;
+
+      try {
+        await joinRoom(callId, { userID: me.id, userName: me.name });
+        await startPublish(type === 'video');
+
+        // Seul l'appelé crée l'offre SDP. L'appelant attend l'offre → handleOffer → answer.
+        if (isOfferer) {
+          // Petit délai pour laisser l'autre rejoindre le canal de signalisation
+          await new Promise(r => setTimeout(r, 600));
+          await createOffer();
         }
-      });
 
-      await startPublish(type === 'video');
+        setCallState('connected');
+        emitCallConnected();
+        startCallTimer();
+      } catch (err) {
+        console.error('Erreur WebRTC:', err);
+        _zegoInitializedCallId = null; // permet une tentative ultérieure
+        setCallState('ended');
+        setTimeout(() => setCallState('idle'), 2000);
+      }
+    } else {
+      // Déjà initialisé par une autre instance (p. ex. ChatLayout a pris le
+      // verrou avant CallScreen, ou l'appelant via Realtime avant l'appelé)
+      try {
+        // Si on doit envoyer l'offre mais que l'autre instance ne l'a pas fait, on le fait ici
+        if (isOfferer) {
+          await createOffer(); // Ne fait rien si offer déjà envoyé (offerSent flag)
+        }
+      } catch (err) {
+        console.error('Erreur WebRTC (secondaire):', err);
+      }
 
-      setCallState('connected');
-      startCallTimer();
-    } catch (err) {
-      console.error('Erreur WebRTC:', err);
-      setCallState('ended');
-      setTimeout(() => setCallState('idle'), 2000);
+      // Synchroniser l'état de tous les useCall
+      if (callStateRef.current === 'connecting' || callStateRef.current === 'calling') {
+        setCallState('connected');
+        startCallTimer();
+      }
     }
+  }, [startCallTimer]);
+
+  // ─── Synchronisation inter-instances : quand une instance réussit WebRTC,
+  //       toutes les autres (ChatLayout / CallScreen) reçoivent l'événement ───
+  useEffect(() => {
+    const onConnected = () => {
+      // On utilise currentCallIdRef plutôt que callStateRef pour éviter le
+      // problème de stale ref (au moment où emitCallConnected est appelé,
+      // le re-render avec 'connecting' n'a pas encore eu lieu).
+      if (currentCallIdRef.current && callStateRef.current !== 'connected' && callStateRef.current !== 'ended') {
+        setCallState('connected');
+        startCallTimer();
+      }
+    };
+    return onCallConnected(onConnected);
   }, [startCallTimer]);
 
   // ============================================================
@@ -140,10 +217,19 @@ export function useCall(): UseCallReturn {
       // L'appelant attend que le partenaire réponde — le handler Realtime UPDATE s'en charge
       setCallState('calling');
     } else {
-      // Le répondant initie WebRTC immédiatement
+      // Le répondant initie WebRTC immédiatement en tant qu'offerer
       setCallState('connecting');
-      initZegoCall(callId, type as CallType);
+      initZegoCall(callId, type as CallType, true);
     }
+
+    return () => {
+      // React 19 StrictMode monte/démonte/monte l'effet 2×.
+      // Sans ce cleanup, le 2e montage voit _zegoInitializedCallId déjà positionné
+      // et passe dans le bloc alreadyInit (qui ne fait pas la véritable init WebRTC).
+      if (_zegoInitializedCallId === callId) {
+        _zegoInitializedCallId = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -175,10 +261,10 @@ export function useCall(): UseCallReturn {
           const me = await getCurrentProfile();
           if (!me) return;
 
-          // L'appelant détecte que le partenaire a répondu
+          // L'appelant détecte que le partenaire a répondu (answerer = pas d'offre SDP)
           if (updated.status === 'answered' && updated.caller_id === me.id && currentCallIdRef.current === updated.id) {
             setCallState('connecting');
-            await initZegoCall(updated.id, updated.type);
+            await initZegoCall(updated.id, updated.type, false);
           }
 
           // Le partenaire a annulé / l'appel a échoué
@@ -261,6 +347,7 @@ export function useCall(): UseCallReturn {
     }
 
     setOnRemoteStreamUpdate(null);
+    setOnConnectionStateChange(null);
     await stopPublish();
     await leaveRoom(callId);
 
@@ -275,9 +362,41 @@ export function useCall(): UseCallReturn {
       })
       .eq('id', callId);
 
+    // ─── Journal d'appel : insérer un message type 'call' ───
+    const me = profileRef.current;
+    if (me) {
+      const { data: callRecord } = await supabase
+        .from('calls')
+        .select('caller_id, type')
+        .eq('id', callId)
+        .single();
+
+      if (callRecord) {
+        const { data: conv } = await supabase
+          .from('conversations')
+          .select('id')
+          .limit(1)
+          .single();
+
+        if (conv) {
+          // sender_id = caller_id pour que isOwn fonctionne des deux côtés
+          await supabase.from('messages').insert({
+            conversation_id: conv.id,
+            sender_id: callRecord.caller_id,
+            type: 'call',
+            content: JSON.stringify({
+              callType: callRecord.type,
+              duration: wasAnswered ? callDuration : 0,
+              status: wasAnswered ? 'answered' : 'cancelled',
+            }),
+          });
+        }
+      }
+    }
+
     stopCallTimer();
     currentCallIdRef.current = null;
-    _initializingCallId = null;
+    _zegoInitializedCallId = null;
 
     setTimeout(() => {
       setCallState('idle');
@@ -304,6 +423,7 @@ export function useCall(): UseCallReturn {
     setIncomingCall(null);
     setCallDuration(0);
     currentCallIdRef.current = null;
+    _zegoInitializedCallId = null;
     stopCallTimer();
   }, [stopCallTimer]);
 

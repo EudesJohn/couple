@@ -2,13 +2,16 @@
 // Layout du Chat — header premium avec présence + appels
 // Design Burgundy & Gold, Framer Motion
 // ============================================================
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { usePresence } from '../hooks/usePresence';
 import { useCall } from '../hooks/useCall';
 import { useAuth } from '../hooks/useAuth';
+import { supabase } from '../lib/supabase';
+import { getPartnerProfileId } from '../lib/profile';
+import { downloadMedia } from '../lib/media';
 import { PhoneIcon, VideoIcon, SettingsIcon, HeartFilledIcon } from '../components/Icons';
 import { CallTypeSheet } from '../components/call/CallTypeSheet';
 import { IncomingCallBanner } from '../components/call/IncomingCallBanner';
@@ -21,6 +24,47 @@ export default function ChatLayout() {
   const PARTNER_NAME = identity === 'woman' ? 'Mon chéri' : 'Ma chérie';
   const isTyping = partnerPresence?.is_typing ?? false;
   const [callSheetVisible, setCallSheetVisible] = useState(false);
+  const [partnerAvatarUrl, setPartnerAvatarUrl] = useState<string | null>(null);
+  const avatarBlobUrlRef = useRef<string | null>(null);
+
+  // Charger la photo de profil du partenaire
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPartnerAvatar() {
+      const partnerProfileId = getPartnerProfileId();
+      if (!partnerProfileId) return;
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('avatar_url')
+        .eq('id', partnerProfileId)
+        .single();
+
+      if (cancelled) return;
+      if (error || !data?.avatar_url) return;
+
+      try {
+        const blob = await downloadMedia(data.avatar_url);
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        avatarBlobUrlRef.current = url;
+        setPartnerAvatarUrl(url);
+      } catch {
+        // Fallback silencieux → cœur
+      }
+    }
+
+    loadPartnerAvatar();
+
+    return () => {
+      cancelled = true;
+      if (avatarBlobUrlRef.current) {
+        URL.revokeObjectURL(avatarBlobUrlRef.current);
+        avatarBlobUrlRef.current = null;
+      }
+    };
+  }, [identity]);
 
   return (
     <div style={{
@@ -48,9 +92,22 @@ export default function ChatLayout() {
               backgroundColor: colors.surfaceDim,
               display: 'flex', justifyContent: 'center', alignItems: 'center',
               position: 'relative',
+              overflow: 'hidden',
             }}
           >
-            <HeartFilledIcon size={18} color={colors.accent} />
+            {partnerAvatarUrl ? (
+              <img
+                src={partnerAvatarUrl}
+                alt={PARTNER_NAME}
+                style={{
+                  width: 40, height: 40,
+                  objectFit: 'cover',
+                  display: 'block',
+                }}
+              />
+            ) : (
+              <HeartFilledIcon size={18} color={colors.accent} />
+            )}
             <div
               style={{
                 position: 'absolute', bottom: 0, right: 0,

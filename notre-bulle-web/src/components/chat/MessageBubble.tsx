@@ -8,7 +8,7 @@ import { VoiceNoteBubble } from '../media/VoiceNoteBubble';
 import { StorageImage } from '../media/StorageImage';
 import { VideoBubble } from '../media/VideoBubble';
 import { getMediaType } from '../../lib/media';
-import { DoubleCheckIcon, ReplyIcon } from '../Icons';
+import { DoubleCheckIcon, ReplyIcon, PhoneIcon, VideoIcon, PhoneOffIcon } from '../Icons';
 import type { MessageWithDetails } from '../../types/database';
 
 interface MessageBubbleProps {
@@ -95,6 +95,79 @@ function QuotedMessage({ replyTo, isOwn }: { replyTo: NonNullable<MessageWithDet
   );
 }
 
+// ─── Bulle de journal d'appel (WhatsApp-style) ───
+function CallLogBubble({ message, isOwn, selfColor, otherColor }: {
+  message: MessageWithDetails;
+  isOwn: boolean;
+  selfColor: string;
+  otherColor: string;
+}) {
+  let callData: Record<string, any> = {};
+  try { callData = JSON.parse(message.content || '{}'); } catch { /* ignore */ }
+
+  const callType = callData.callType || 'audio';
+  const status = callData.status || 'missed';
+  const duration = callData.duration || 0;
+  const isMissed = status === 'missed';
+  const isCancelled = status === 'cancelled';
+
+  const Icon = (isMissed || isCancelled) ? PhoneOffIcon : (callType === 'video' ? VideoIcon : PhoneIcon);
+  const iconCircleBg = (isMissed || isCancelled) ? `${colors.error}20` : 'rgba(255,255,255,0.15)';
+  const iconColor = (isMissed || isCancelled) ? colors.error : (isOwn ? colors.bubbleSelfText : colors.primary);
+  const label = isMissed ? 'Appel manqué' : (isCancelled ? 'Appel annulé' : `Appel ${callType === 'video' ? 'vidéo' : 'audio'}`);
+
+  const mins = Math.floor(duration / 60);
+  const secs = duration % 60;
+  const durationStr = duration > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : '';
+
+  // Estimation conso données: ~1 Mo/min audio, ~6 Mo/min vidéo
+  const dataMB = (duration / 60) * (callType === 'video' ? 6 : 1);
+  const dataStr = dataMB < 1 ? '< 1 Mo' : `～${dataMB.toFixed(1).replace('.', ',')} Mo`;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 0.35, ease: [0.25, 0.1, 0.25, 1] }}
+      style={{
+        display: 'flex',
+        justifyContent: isOwn ? 'flex-end' : 'flex-start',
+        marginBottom: spacing.sm,
+        padding: `0 ${spacing.lg}px`,
+      }}
+    >
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        backgroundColor: isOwn ? selfColor : otherColor,
+        padding: `${spacing.md}px ${spacing.lg}px`,
+        borderRadius: borderRadius.lg,
+        borderBottomRightRadius: isOwn ? borderRadius.sm : borderRadius.lg,
+        borderBottomLeftRadius: !isOwn ? borderRadius.sm : borderRadius.lg,
+        border: !isOwn ? `1px solid ${colors.borderLight}` : undefined,
+        boxShadow: `0 2px 6px ${isOwn ? colors.glowBurgundy : colors.shadow}`,
+      }}>
+        <div style={{
+          width: 44, height: 44, borderRadius: 22, flexShrink: 0,
+          backgroundColor: iconCircleBg,
+          display: 'flex', justifyContent: 'center', alignItems: 'center',
+        }}>
+          <Icon size={22} color={iconColor} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: isOwn ? colors.bubbleSelfText : colors.text }}>
+            {label}
+          </div>
+          {!isMissed && duration > 0 && (
+            <div style={{ fontSize: 13, color: isOwn ? 'rgba(255,255,255,0.65)' : colors.textTertiary, marginTop: 2 }}>
+              {durationStr} • {dataStr}
+            </div>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 export function MessageBubble({ message, isOwn, index = 0, bubbleSelfColor, bubbleOtherColor, onImageClick, onVideoExpand }: MessageBubbleProps) {
   const attachments = message.attachments || [];
   const hasAttachment = attachments.length > 0;
@@ -102,7 +175,12 @@ export function MessageBubble({ message, isOwn, index = 0, bubbleSelfColor, bubb
 
   const selfColor = bubbleSelfColor || colors.bubbleSelf;
   const otherColor = bubbleOtherColor || colors.bubbleOther;
-  const hasReply = !!message.reply_to_message;
+  const hasReply = !!message.reply_to_message?.id;
+
+  // Journal d'appel → rendu spécial
+  if (message.type === 'call') {
+    return <CallLogBubble message={message} isOwn={isOwn} selfColor={selfColor} otherColor={otherColor} />;
+  }
 
   return (
     <motion.div

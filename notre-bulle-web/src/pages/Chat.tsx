@@ -52,9 +52,9 @@ function DateSeparator({ date }: { date: string }) {
 
 export default function ChatScreen() {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { messages, sendText, sendVoice, sendImage, sendVideo, isLoading, isUploading, uploadProgress, myProfileId, error } = useMessages();
+  const { messages, sendText, sendVoice, sendImage, isLoading, isUploading, uploadProgress, myProfileId, error } = useMessages();
   const { setIsTyping, partnerPresence } = usePresence();
-  const { pickImage, takePhoto, pickVideo } = useMediaPicker();
+  const { pickImage, takePhoto } = useMediaPicker();
   const { bubbleSelf, bubbleOther, bg, backgroundImage } = useTheme();
 
   const isPartnerTyping = partnerPresence?.is_typing ?? false;
@@ -94,10 +94,6 @@ export default function ChatScreen() {
     }
   }, [messages.length, isLoading]);
 
-  const handleReply = useCallback((message: MessageWithDetails) => {
-    setReplyTarget(message);
-  }, []);
-
   const handleCancelReply = useCallback(() => {
     setReplyTarget(null);
   }, []);
@@ -125,13 +121,6 @@ export default function ChatScreen() {
       sendImage(media.uri, media.mimeType, media.width, media.height);
     }
   }, [takePhoto, sendImage]);
-
-  const handleSendVideo = useCallback(async () => {
-    const media = await pickVideo();
-    if (media) {
-      sendVideo(media.uri, media.mimeType, media.width, media.height, media.durationMs);
-    }
-  }, [pickVideo, sendVideo]);
 
   const handleOpenImage = useCallback((storagePath: string) => {
     setLightbox({ storagePath, mimeType: 'image/jpeg' });
@@ -321,7 +310,6 @@ export default function ChatScreen() {
         onSendVoice={handleSendVoice}
         onSendImage={handleSendImage}
         onTakePhoto={handleTakePhoto}
-        onSendVideo={handleSendVideo}
         onTypingChange={setIsTyping}
         replyTo={replyTarget}
         onCancelReply={handleCancelReply}

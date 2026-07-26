@@ -5,14 +5,13 @@
 import { useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { colors, borderRadius, spacing } from '../../constants/theme';
-import { CameraIcon, ImageIcon, VideoIcon, CloseIcon } from '../Icons';
+import { CameraIcon, ImageIcon, CloseIcon } from '../Icons';
 
 interface MediaPickerSheetProps {
   visible: boolean;
   onClose: () => void;
   onTakePhoto: () => void;
   onPickImage: () => void;
-  onPickVideo: () => void;
 }
 
 function MediaOption({
@@ -59,7 +58,7 @@ function MediaOption({
 }
 
 export function MediaPickerSheet({
-  visible, onClose, onTakePhoto, onPickImage, onPickVideo,
+  visible, onClose, onTakePhoto, onPickImage,
 }: MediaPickerSheetProps) {
   useEffect(() => {
     if (!visible) return;
@@ -149,14 +148,6 @@ export function MediaPickerSheet({
                 color={colors.accent}
                 onPress={() => { onClose(); onPickImage(); }}
                 delay={0.16}
-              />
-              <MediaOption
-                icon={VideoIcon}
-                label="Vidéo"
-                description="Ajouter une vidéo"
-                color={colors.primaryLight}
-                onPress={() => { onClose(); onPickVideo(); }}
-                delay={0.24}
               />
             </div>
 

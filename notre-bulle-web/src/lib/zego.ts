@@ -20,6 +20,11 @@ interface CallUser {
 }
 
 let onRemoteStreamUpdate: ((streams: any[], added: boolean) => void) | null = null;
+let onConnectionStateChange: ((state: string) => void) | null = null;
+
+export function setOnConnectionStateChange(cb: ((state: string) => void) | null): void {
+  onConnectionStateChange = cb;
+}
 
 // ==========================================================
 // WebRTC Implementation
@@ -33,6 +38,7 @@ class WebRTCManager {
   private callId: string = '';
   private isMuted: boolean = false;
   private isSpeakerOn: boolean = false;
+  private offerSent: boolean = false;
 
   private iceServers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -40,6 +46,12 @@ class WebRTCManager {
   ];
 
   async joinRoom(roomID: string, user: CallUser): Promise<void> {
+    // Idempotent : si déjà dans cette room, ne pas recréer le PC
+    if (this.callId === roomID && this.pc) return;
+
+    // Nettoyer une éventuelle session précédente
+    await this.leaveRoom();
+
     this.callId = roomID;
 
     this.pc = new RTCPeerConnection({ iceServers: this.iceServers });
@@ -64,7 +76,11 @@ class WebRTCManager {
     };
 
     this.pc.onconnectionstatechange = () => {
-      if (this.pc?.connectionState === 'disconnected' || this.pc?.connectionState === 'failed') {
+      const state = this.pc?.connectionState;
+      if (state === 'connected') {
+        onConnectionStateChange?.('connected');
+      } else if (state === 'disconnected' || state === 'failed') {
+        onConnectionStateChange?.(state!);
         onRemoteStreamUpdate?.([], false);
       }
     };
@@ -81,6 +97,8 @@ class WebRTCManager {
 
   async startPublish(video: boolean = false): Promise<void> {
     try {
+      if (this.localStream) return; // Déjà capturé
+
       this.localStream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video, // Only request camera when it's a video call
@@ -89,28 +107,58 @@ class WebRTCManager {
       this.localStream.getTracks().forEach(track => {
         this.pc?.addTrack(track, this.localStream!);
       });
-
-      const offer = await this.pc!.createOffer();
-      await this.pc!.setLocalDescription(offer);
-      await this.sendSignal('sdp-offer', { sdp: offer.sdp, type: offer.type });
     } catch (err) {
       console.error('[WebRTC] Erreur startPublish:', err);
       throw err;
     }
   }
 
+  async createOffer(): Promise<void> {
+    if (this.offerSent) return;
+    this.offerSent = true;
+    const offer = await this.pc!.createOffer();
+    await this.pc!.setLocalDescription(offer);
+    await this.sendSignal('sdp-offer', { sdp: offer.sdp, type: offer.type });
+  }
+
   async handleOffer(payload: { sdp: string; type: string }): Promise<void> {
     if (!this.pc) return;
-    await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
 
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
-    await this.sendSignal('sdp-answer', { sdp: answer.sdp, type: answer.type });
+    // Polite peer : si on a déjà créé une offre locale, rollback pour accepter
+    // l'offre distante (évite la collision SDP quand les deux publient)
+    if (this.pc.signalingState === 'have-local-offer') {
+      try {
+        await this.pc.setLocalDescription({ type: 'rollback' });
+      } catch {
+        console.warn('[WebRTC] rollback non supporté, fermeture du PC');
+        this.pc.close();
+        this.pc = null;
+        onRemoteStreamUpdate?.([], false);
+        onConnectionStateChange?.('failed');
+        return;
+      }
+    }
+
+    try {
+      await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
+
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
+      await this.sendSignal('sdp-answer', { sdp: answer.sdp, type: answer.type });
+    } catch (err) {
+      console.error('[WebRTC] Erreur handleOffer:', err);
+    }
   }
 
   async handleAnswer(payload: { sdp: string; type: string }): Promise<void> {
     if (!this.pc) return;
-    await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
+    // Ignorer si déjà en état stable (connexion déjà établie)
+    if (this.pc.signalingState === 'stable') return;
+    try {
+      await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
+    } catch (err) {
+      console.error('[WebRTC] Erreur handleAnswer:', err);
+    }
   }
 
   async handleIceCandidate(payload: any): Promise<void> {
@@ -147,6 +195,7 @@ class WebRTCManager {
     this.remoteStream = null;
     this.remoteStreamId = null;
     this.callId = '';
+    this.offerSent = false;
   }
 
   async stopPublish(): Promise<void> {
@@ -229,6 +278,10 @@ export async function leaveRoom(roomID?: string): Promise<void> {
 /** @param video – demander la caméra (true pour appel vidéo, false/skip pour audio) */
 export async function startPublish(video?: boolean): Promise<void> {
   return getWebRTC().startPublish(video ?? false);
+}
+
+export async function createOffer(): Promise<void> {
+  return getWebRTC().createOffer();
 }
 
 export async function stopPublish(): Promise<void> {
