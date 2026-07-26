@@ -70,6 +70,14 @@ export async function notifyNewMessage(
   sendWebNotification(senderName, body, { screen: 'chat', conversationId });
 }
 
+export async function notifyMissedCall(
+  callerName: string,
+  callType: 'audio' | 'video'
+): Promise<void> {
+  const typeLabel = callType === 'video' ? 'Video' : 'Audio';
+  sendWebNotification('Appel manqué', `${typeLabel} — ${callerName} t'a appelé`, { screen: 'chat', callType });
+}
+
 export async function notifyIncomingCall(
   callerName: string,
   callType: 'audio' | 'video'

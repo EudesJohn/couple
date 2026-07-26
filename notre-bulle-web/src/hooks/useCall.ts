@@ -18,7 +18,7 @@ import {
   createOffer,
 } from '../lib/zego';
 import type { Call, CallType } from '../types/database';
-import { notifyIncomingCall } from './useNotifications';
+import { notifyIncomingCall, notifyMissedCall } from './useNotifications';
 
 type CallStateType = 'idle' | 'calling' | 'ringing' | 'connecting' | 'connected' | 'ended';
 
@@ -250,6 +250,7 @@ export function useCall(): UseCallReturn {
           setIncomingCall(call);
           setCallType(call.type);
           setCallState('ringing');
+          currentCallIdRef.current = call.id; // pour que l'UPDATE puisse nettoyer
           notifyIncomingCall(partnerRef.current?.name || 'Partenaire', call.type);
         }
       )
@@ -272,8 +273,13 @@ export function useCall(): UseCallReturn {
             (updated.status === 'cancelled' || updated.status === 'failed') &&
             currentCallIdRef.current === updated.id
           ) {
+            // Notification si l'appel n'avait pas encore abouti (appel manqué)
+            if (callStateRef.current === 'ringing' || callStateRef.current === 'idle') {
+              notifyMissedCall(partnerRef.current?.name || 'Partenaire', callType);
+            }
             setCallState('ended');
             setTimeout(() => setCallState('idle'), 2000);
+            currentCallIdRef.current = null;
           }
         }
       )
