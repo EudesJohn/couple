@@ -78,38 +78,52 @@ export const borderRadius = {
   pill: 999,
 } as const;
 
+// --- FONTS ---
+export const fonts = {
+  display: "'Great Vibes', cursive",
+  body: "'Cormorant Infant', 'Georgia', serif",
+  ui: "system-ui, -apple-system, sans-serif",
+} as const;
+
 // --- TYPOGRAPHIE ---
 export const typography = {
+  display: {
+    fontFamily: fonts.display,
+    fontSize: 36,
+    fontWeight: '400' as const,
+    letterSpacing: 0.5,
+    color: colors.text,
+  },
   heading: {
-    fontFamily: 'System',
+    fontFamily: fonts.ui,
     fontSize: 28,
     fontWeight: '700' as const,
     letterSpacing: -0.5,
     color: colors.text,
   },
   subheading: {
-    fontFamily: 'System',
+    fontFamily: fonts.ui,
     fontSize: 18,
     fontWeight: '600' as const,
     letterSpacing: -0.3,
     color: colors.text,
   },
   body: {
-    fontFamily: 'System',
-    fontSize: 16,
+    fontFamily: fonts.body,
+    fontSize: 17,
     fontWeight: '400' as const,
     letterSpacing: 0,
     color: colors.text,
   },
   caption: {
-    fontFamily: 'System',
+    fontFamily: fonts.ui,
     fontSize: 13,
     fontWeight: '400' as const,
     letterSpacing: 0,
     color: colors.textSecondary,
   },
   label: {
-    fontFamily: 'System',
+    fontFamily: fonts.ui,
     fontSize: 14,
     fontWeight: '500' as const,
     letterSpacing: 0.3,

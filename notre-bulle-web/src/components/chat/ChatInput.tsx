@@ -144,6 +144,7 @@ export function ChatInput({
         <motion.button
           whileTap={{ scale: 0.88 }}
           onClick={handleMediaPress}
+          aria-label="Joindre un média"
           style={{
             width: 36, height: 36, borderRadius: 18, cursor: 'pointer',
             backgroundColor: mediaSheetVisible ? colors.primary : colors.surfaceAlt,
@@ -192,6 +193,7 @@ export function ChatInput({
         <motion.button
           whileTap={{ scale: 0.88 }}
           onClick={handleMicPress}
+          aria-label="Message vocal"
           style={{
             width: 36, height: 36, borderRadius: 18, border: 'none', cursor: 'pointer',
             backgroundColor: colors.surfaceAlt,
@@ -207,8 +209,10 @@ export function ChatInput({
           whileTap={{ scale: 0.88 }}
           onClick={handleSendText}
           disabled={!hasText}
+          aria-label="Envoyer le message"
           style={{
-            width: 36, height: 36, borderRadius: 18, border: 'none', cursor: hasText ? 'pointer' : 'default',
+            width: 36, height: 36, borderRadius: 18, border: 'none',
+            cursor: hasText ? 'pointer' : 'not-allowed',
             backgroundColor: hasText ? colors.primary : colors.surfaceAlt,
             display: 'flex', justifyContent: 'center', alignItems: 'center',
             marginBottom: 2, flexShrink: 0,

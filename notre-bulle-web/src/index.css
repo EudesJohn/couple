@@ -15,10 +15,22 @@
   }
 
   body {
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: 'Cormorant Infant', 'Georgia', serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overscroll-behavior: none;
+  }
+
+  /* Focus visible ring for keyboard nav */
+  *:focus-visible {
+    outline: 2px solid #CA8A04;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* App text uses system font for UI density */
+  .ui-text {
+    font-family: system-ui, -apple-system, sans-serif;
   }
 
   /* Scrollbar style */

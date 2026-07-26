@@ -91,7 +91,7 @@ export async function getCurrentProfile() {
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
-    const { data } = await supabase.from('profiles').select('*').eq('supabase_uid', user.id).single();
+    const { data } = await supabase.from('profiles').select('*').eq('supabase_uid', user.id).maybeSingle();
     return data;
   } catch { return null; }
 }

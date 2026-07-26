@@ -10,13 +10,14 @@ import { usePresence } from '../hooks/usePresence';
 import { useCall } from '../hooks/useCall';
 import { PhoneIcon, VideoIcon, SettingsIcon, HeartFilledIcon } from '../components/Icons';
 import { CallTypeSheet } from '../components/call/CallTypeSheet';
+import { IncomingCallBanner } from '../components/call/IncomingCallBanner';
 
 const PARTNER_NAME = 'Ma chérie';
 
 export default function ChatLayout() {
   const navigate = useNavigate();
   const { isPartnerOnline, partnerPresence } = usePresence();
-  const { startCall } = useCall();
+  const { startCall, incomingCall, answerCall, rejectCall, callState } = useCall();
   const isTyping = partnerPresence?.is_typing ?? false;
   const [callSheetVisible, setCallSheetVisible] = useState(false);
 
@@ -112,6 +113,15 @@ export default function ChatLayout() {
         onClose={() => setCallSheetVisible(false)}
         onStartAudioCall={() => startCall('audio')}
         onStartVideoCall={() => startCall('video')}
+      />
+
+      {/* Appel entrant */}
+      <IncomingCallBanner
+        visible={callState === 'ringing' && incomingCall !== null}
+        callType={incomingCall?.type || 'audio'}
+        partnerName={PARTNER_NAME}
+        onAnswer={answerCall}
+        onReject={rejectCall}
       />
     </div>
   );

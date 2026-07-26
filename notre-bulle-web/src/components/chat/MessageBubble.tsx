@@ -5,7 +5,9 @@
 import { motion } from 'framer-motion';
 import { colors, spacing, borderRadius } from '../../constants/theme';
 import { VoiceNoteBubble } from '../media/VoiceNoteBubble';
-import { getMediaUrl, getMediaType } from '../../lib/media';
+import { StorageImage } from '../media/StorageImage';
+import { VideoBubble } from '../media/VideoBubble';
+import { getMediaType } from '../../lib/media';
 import { DoubleCheckIcon, ReplyIcon } from '../Icons';
 import type { MessageWithDetails } from '../../types/database';
 
@@ -15,6 +17,8 @@ interface MessageBubbleProps {
   index?: number;
   bubbleSelfColor?: string;
   bubbleOtherColor?: string;
+  onImageClick?: (storagePath: string) => void;
+  onVideoExpand?: (storagePath: string, mimeType: string) => void;
 }
 
 function formatTime(createdAt: string): string {
@@ -91,7 +95,7 @@ function QuotedMessage({ replyTo, isOwn }: { replyTo: NonNullable<MessageWithDet
   );
 }
 
-export function MessageBubble({ message, isOwn, index = 0, bubbleSelfColor, bubbleOtherColor }: MessageBubbleProps) {
+export function MessageBubble({ message, isOwn, index = 0, bubbleSelfColor, bubbleOtherColor, onImageClick, onVideoExpand }: MessageBubbleProps) {
   const attachments = message.attachments || [];
   const hasAttachment = attachments.length > 0;
   const attachment = attachments[0];
@@ -102,9 +106,13 @@ export function MessageBubble({ message, isOwn, index = 0, bubbleSelfColor, bubb
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, delay: Math.min(index * 0.03, 0.2) }}
+      initial={{ opacity: 0, y: 12, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{
+        duration: 0.35,
+        delay: Math.min(index * 0.025, 0.3),
+        ease: [0.25, 0.1, 0.25, 1],
+      }}
       style={{
         display: 'flex',
         justifyContent: isOwn ? 'flex-end' : 'flex-start',
@@ -136,11 +144,28 @@ export function MessageBubble({ message, isOwn, index = 0, bubbleSelfColor, bubb
             borderTopRightRadius: borderRadius.lg,
             overflow: 'hidden',
           }}>
-            <img
-              src={getMediaUrl(attachment.storage_path)}
+            <StorageImage
+              storagePath={attachment.storage_path}
               alt="Media"
               style={{ width: 240, height: 200, objectFit: 'cover', display: 'block' }}
-              loading="lazy"
+              onClick={onImageClick ? () => onImageClick(attachment.storage_path) : undefined}
+            />
+          </div>
+        )}
+
+        {/* Vidéo */}
+        {hasAttachment && getMediaType(attachment.mime_type) === 'video' && (
+          <div style={{
+            margin: `-${spacing.lg}px`,
+            marginBottom: spacing.sm,
+            borderTopLeftRadius: borderRadius.lg,
+            borderTopRightRadius: borderRadius.lg,
+            overflow: 'hidden',
+          }}>
+            <VideoBubble
+              storagePath={attachment.storage_path}
+              mimeType={attachment.mime_type}
+              onExpand={onVideoExpand ? (blobUrl, mt) => onVideoExpand(attachment.storage_path, mt) : undefined}
             />
           </div>
         )}

@@ -187,7 +187,11 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
     try {
       await stopPlayback();
 
-      const audio = new Audio(uri);
+      // crossOrigin = 'anonymous' obligatoire pour les URLs Supabase Storage
+      // (cross-origin), sinon le navigateur bloque l'accès aux métadonnées audio
+      const audio = new Audio();
+      audio.crossOrigin = 'anonymous';
+      audio.src = uri;
       audioElementRef.current = audio;
 
       audio.onloadedmetadata = () => {
@@ -206,8 +210,10 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
         clearPlaybackTimer();
       };
 
-      audio.onerror = (e) => {
-        console.error('Erreur chargement audio:', e);
+      audio.onerror = () => {
+        const code = audio.error?.code;
+        const msg = audio.error?.message || 'Erreur inconnue';
+        console.error('Erreur chargement audio:', { code, message: msg, url: uri });
       };
     } catch (err) {
       console.error('Erreur lecture:', err);

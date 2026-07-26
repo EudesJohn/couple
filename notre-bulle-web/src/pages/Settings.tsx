@@ -8,8 +8,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { supabase } from '../lib/supabase';
 import { hashPin, savePinHash, verifyPin, getStoredPinHash } from '../lib/auth';
-import { saveTheme, saveBackgroundImage, removeBackgroundImage, type ChatTheme } from '../lib/settings';
-import { compressImage } from '../lib/media';
+import { getTheme, saveTheme, saveBackgroundImage, removeBackgroundImage, getBackgroundImage, type ChatTheme } from '../lib/settings';
+import { compressImage, downloadMedia } from '../lib/media';
 import { config } from '../constants/config';
 import {
   BackIcon, SettingsIcon, HeartFilledIcon, UserIcon, LockIcon,
@@ -83,8 +83,10 @@ export default function SettingsScreen() {
   const [displayName, setDisplayName] = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
   const [avatar, setAvatar] = useState<string | null>(null);
+  const [avatarSrc, setAvatarSrc] = useState<string | null>(null); // blob URL pour l'affichage
   const [selectedTheme, setSelectedTheme] = useState(0);
   const [bgPreview, setBgPreview] = useState<string | null>(null);
+  const [bgSrc, setBgSrc] = useState<string | null>(null); // blob URL pour l'affichage
 
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -122,32 +124,86 @@ export default function SettingsScreen() {
   const [pinStep, setPinStep] = useState<'old' | 'new' | 'confirm'>('old');
   const [pinError, setPinError] = useState('');
 
-  // Get Supabase user ID
+  // Get profile ID (pas de session Supabase, on utilise la config)
   const getUserId = useCallback(async (): Promise<string | null> => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user?.id) return session.user.id;
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user?.id) return user.id;
     return config.myProfileId ?? null;
   }, []);
 
   // Load profile
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       const userId = await getUserId();
       if (!userId) return;
       const { data: profile } = await supabase
         .from('profiles')
         .select('display_name, avatar_url')
-        .eq('supabase_uid', userId)
-        .single();
+        .eq('id', userId)
+        .maybeSingle();
+      if (cancelled) return;
       if (profile) {
         setDisplayName(profile.display_name);
         setNewDisplayName(profile.display_name);
-        setAvatar(profile.avatar_url);
+        // Charger l'avatar via downloadMedia (contourne le bucket privé)
+        if (profile.avatar_url) {
+          setAvatar(profile.avatar_url);
+        }
       }
     })();
+    return () => { cancelled = true; };
   }, [getUserId]);
+
+  // Charger l'image de l'avatar via downloadMedia (contourne le bucket privé)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setAvatarSrc(null);
+      if (!avatar) return;
+      // Si c'est un chemin Storage, télécharger via l'API
+      if (avatar.startsWith('MEDIA/') || avatar.startsWith('VOICE_NOTES/') || avatar.startsWith('THUMBNAILS/')) {
+        try {
+          const blob = await downloadMedia(avatar);
+          if (!cancelled) setAvatarSrc(URL.createObjectURL(blob));
+        } catch {
+          if (!cancelled) setAvatarSrc(null);
+        }
+      } else {
+        // Legacy URL publique
+        if (!cancelled) setAvatarSrc(avatar);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [avatar]);
+
+  // Charger le fond d'écran au montage
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const bg = await getBackgroundImage();
+      if (cancelled || !bg) return;
+      setBgPreview(bg);
+      if (bg.startsWith('MEDIA/') || bg.startsWith('VOICE_NOTES/') || bg.startsWith('THUMBNAILS/')) {
+        try {
+          const blob = await downloadMedia(bg);
+          if (!cancelled) setBgSrc(URL.createObjectURL(blob));
+        } catch { /* silencieux */ }
+      } else {
+        if (!cancelled) setBgSrc(bg);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Load current theme from localStorage
+  useEffect(() => {
+    (async () => {
+      const theme = await getTheme();
+      const idx = THEMES.findIndex(
+        t => t.bg === theme.bg && t.bubbleSelf === theme.bubbleSelf && t.bubbleOther === theme.bubbleOther
+      );
+      if (idx >= 0) setSelectedTheme(idx);
+    })();
+  }, []);
 
   // Save display name
   const saveDisplayName = useCallback(async () => {
@@ -167,7 +223,7 @@ export default function SettingsScreen() {
       const { error } = await supabase
         .from('profiles')
         .update({ display_name: newDisplayName.trim() })
-        .eq('supabase_uid', userId);
+        .eq('id', userId);
       if (error) throw error;
       setDisplayName(newDisplayName.trim());
       showToast('Pseudo modifié');
@@ -227,20 +283,21 @@ export default function SettingsScreen() {
     }
   }, [pinStep, oldPin, newPin, confirmPin, showToast]);
 
-  // Upload image to Supabase
+  // Upload image to Supabase — stocke le chemin, pas l'URL publique
   const uploadImageToStorage = useCallback(async (
     userId: string, uri: string, folder: 'avatars' | 'backgrounds'
   ): Promise<string> => {
     const fileName = `${userId}.jpg`;
-    const filePath = `${folder}/${fileName}`;
+    // Chemin avec préfixe MEDIA/ (comme uploadMedia dans media.ts)
+    const filePath = `MEDIA/${folder}/${fileName}`;
     const response = await fetch(uri);
     const blob = await response.blob();
     const { error: uploadError } = await supabase.storage
       .from('media')
       .upload(filePath, blob, { contentType: 'image/jpeg', upsert: true });
     if (uploadError) throw uploadError;
-    const { data: { publicUrl } } = supabase.storage.from('media').getPublicUrl(filePath);
-    return publicUrl;
+    // Retourne le chemin Storage, pas une URL publique
+    return filePath;
   }, []);
 
   // Select photo using file input
@@ -269,13 +326,13 @@ export default function SettingsScreen() {
         return;
       }
       const compressedUri = await compressImage(photoPreview);
-      const publicUrl = await uploadImageToStorage(userId, compressedUri, 'avatars');
+      const storagePath = await uploadImageToStorage(userId, compressedUri, 'avatars');
       const { error: updateError } = await supabase
         .from('profiles')
-        .update({ avatar_url: publicUrl })
-        .eq('supabase_uid', userId);
+        .update({ avatar_url: storagePath })
+        .eq('id', userId);
       if (updateError) throw updateError;
-      setAvatar(publicUrl);
+      setAvatar(storagePath);
       setPhotoPreview(null);
       showToast('Photo mise à jour');
     } catch (err: any) {
@@ -304,9 +361,16 @@ export default function SettingsScreen() {
           return;
         }
         const compressedUri = await compressImage(uri);
-        const publicUrl = await uploadImageToStorage(userId, compressedUri, 'backgrounds');
-        await saveBackgroundImage(publicUrl);
-        setBgPreview(publicUrl);
+        const storagePath = await uploadImageToStorage(userId, compressedUri, 'backgrounds');
+        await saveBackgroundImage(storagePath);
+        setBgPreview(storagePath);
+        // Charger le blob pour l'affichage
+        try {
+          const blob = await downloadMedia(storagePath);
+          setBgSrc(URL.createObjectURL(blob));
+        } catch {
+          setBgSrc(null);
+        }
         showToast('Fond d\'écran appliqué');
       } catch (err: any) {
         showAlert('error', 'Erreur', err?.message || 'Impossible de changer le fond');
@@ -318,6 +382,7 @@ export default function SettingsScreen() {
   const handleRemoveBackground = useCallback(async () => {
     await removeBackgroundImage();
     setBgPreview(null);
+    setBgSrc(null);
     showToast('Fond d\'écran retiré');
   }, [showToast]);
 
@@ -450,7 +515,7 @@ export default function SettingsScreen() {
                     overflow: 'hidden',
                   }}>
                     {avatar ? (
-                      <img src={avatar} alt="Avatar" style={{ width: 86, height: 86, borderRadius: 43, objectFit: 'cover' }} />
+                      <img src={avatarSrc || undefined} alt="Avatar" style={{ width: 86, height: 86, borderRadius: 43, objectFit: 'cover' }} />
                     ) : (
                       <HeartFilledIcon size={36} color={colors.accent} />
                     )}
@@ -696,7 +761,7 @@ export default function SettingsScreen() {
 
           {bgPreview && (
             <div style={{ marginBottom: spacing.md, borderRadius: borderRadius.md, overflow: 'hidden' }}>
-              <img src={bgPreview} alt="Aperçu fond" style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: borderRadius.md }} />
+              <img src={bgSrc || bgPreview || undefined} alt="Aperçu fond" style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: borderRadius.md }} />
               <motion.button
                 whileTap={{ scale: 0.95 }}
                 onClick={handleRemoveBackground}

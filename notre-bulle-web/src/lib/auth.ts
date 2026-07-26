@@ -1,12 +1,21 @@
 // ============================================================
-// Auth — PIN uniquement
+// Auth — PIN uniquement + identité (femme/homme)
 // Hachage SHA-256 via Web Crypto API (pas de biométrie sur web)
+// Codes préréglés première connexion : 1234 = femme, 1235 = homme
 // Stockage localStorage
 // ============================================================
+
+export type UserIdentity = 'woman' | 'man';
+
+export const PRESET_CODES = {
+  WOMAN: '1234',
+  MAN: '1235',
+} as const;
 
 const STORE_KEYS = {
   PIN_HASH: 'notre-bulle.pin-hash',
   IS_SETUP_DONE: 'notre-bulle.setup-done',
+  IDENTITY: 'notre-bulle.identity',
 } as const;
 
 // --- Hachage PIN (SHA-256 via Web Crypto API) ---
@@ -44,4 +53,26 @@ export async function isSetupDone(): Promise<boolean> {
 // --- Vérifier si le code PIN a déjà été défini ---
 export async function isPinSet(): Promise<boolean> {
   return (await getStoredPinHash()) !== null;
+}
+
+// ==========================================================
+// Identité (femme / homme) — stockée lors de la 1ʳᵉ connexion
+// ==========================================================
+
+export async function saveIdentity(role: UserIdentity): Promise<void> {
+  localStorage.setItem(STORE_KEYS.IDENTITY, role);
+}
+
+export async function getIdentity(): Promise<UserIdentity | null> {
+  const val = localStorage.getItem(STORE_KEYS.IDENTITY);
+  if (val === 'woman' || val === 'man') return val;
+  return null;
+}
+
+export async function isFirstLaunch(): Promise<boolean> {
+  return (await getIdentity()) === null;
+}
+
+export function getIdentityLabel(role: UserIdentity): string {
+  return role === 'woman' ? 'Femme' : 'Homme';
 }

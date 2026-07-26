@@ -1,6 +1,6 @@
 // ============================================================
 // Hook — Notifications web (Web Notification API)
-// Pas de dépendance mobile (expo-notifications, Platform, router)
+// Utilise uniquement l'API Web Notification — pas de dépendance mobile
 // ============================================================
 import { useEffect, useRef } from 'react';
 

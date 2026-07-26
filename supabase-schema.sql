@@ -146,8 +146,59 @@ CREATE TRIGGER set_updated_at
   BEFORE UPDATE ON profiles
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
--- 6. Créer les buckets de stockage (à faire aussi dans l'interface Supabase > Storage)
--- buckets: 'media', 'voice-notes', 'thumbnails'
+-- 6. Buckets de stockage + politiques RLS publiques
+-- L'app utilise un PIN local (pas de session Supabase Auth),
+-- donc les buckets ont besoin de politiques publiques
+INSERT INTO storage.buckets (id, name, public)
+VALUES
+  ('media', 'media', true),
+  ('voice-notes', 'voice-notes', true),
+  ('thumbnails', 'thumbnails', true)
+ON CONFLICT (id) DO UPDATE SET public = EXCLUDED.public;
+
+-- Supprimer les politiques existantes pour éviter les conflits
+DROP POLICY IF EXISTS "Public upload media" ON storage.objects;
+DROP POLICY IF EXISTS "Public read media" ON storage.objects;
+DROP POLICY IF EXISTS "Public update media" ON storage.objects;
+DROP POLICY IF EXISTS "Public delete media" ON storage.objects;
+DROP POLICY IF EXISTS "Public upload voice-notes" ON storage.objects;
+DROP POLICY IF EXISTS "Public read voice-notes" ON storage.objects;
+DROP POLICY IF EXISTS "Public update voice-notes" ON storage.objects;
+DROP POLICY IF EXISTS "Public delete voice-notes" ON storage.objects;
+DROP POLICY IF EXISTS "Public upload thumbnails" ON storage.objects;
+DROP POLICY IF EXISTS "Public read thumbnails" ON storage.objects;
+DROP POLICY IF EXISTS "Public update thumbnails" ON storage.objects;
+DROP POLICY IF EXISTS "Public delete thumbnails" ON storage.objects;
+
+-- Politiques bucket media (avatars, backgrounds)
+CREATE POLICY "Public upload media" ON storage.objects
+  FOR INSERT TO public WITH CHECK (bucket_id = 'media');
+CREATE POLICY "Public read media" ON storage.objects
+  FOR SELECT TO public USING (bucket_id = 'media');
+CREATE POLICY "Public update media" ON storage.objects
+  FOR UPDATE TO public USING (bucket_id = 'media');
+CREATE POLICY "Public delete media" ON storage.objects
+  FOR DELETE TO public USING (bucket_id = 'media');
+
+-- Politiques bucket voice-notes
+CREATE POLICY "Public upload voice-notes" ON storage.objects
+  FOR INSERT TO public WITH CHECK (bucket_id = 'voice-notes');
+CREATE POLICY "Public read voice-notes" ON storage.objects
+  FOR SELECT TO public USING (bucket_id = 'voice-notes');
+CREATE POLICY "Public update voice-notes" ON storage.objects
+  FOR UPDATE TO public USING (bucket_id = 'voice-notes');
+CREATE POLICY "Public delete voice-notes" ON storage.objects
+  FOR DELETE TO public USING (bucket_id = 'voice-notes');
+
+-- Politiques bucket thumbnails
+CREATE POLICY "Public upload thumbnails" ON storage.objects
+  FOR INSERT TO public WITH CHECK (bucket_id = 'thumbnails');
+CREATE POLICY "Public read thumbnails" ON storage.objects
+  FOR SELECT TO public USING (bucket_id = 'thumbnails');
+CREATE POLICY "Public update thumbnails" ON storage.objects
+  FOR UPDATE TO public USING (bucket_id = 'thumbnails');
+CREATE POLICY "Public delete thumbnails" ON storage.objects
+  FOR DELETE TO public USING (bucket_id = 'thumbnails');
 
 -- 7. Activer Realtime sur les tables nécessaires
 -- Dans Supabase > Database > Replication, ajoutez :

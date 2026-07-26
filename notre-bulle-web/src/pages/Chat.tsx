@@ -3,14 +3,18 @@
 // Reply-to (Swipe), fond d'écran personnalisé, thème dynamique
 // ============================================================
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
+import { motion } from 'framer-motion';
 import { colors as staticColors, spacing } from '../constants/theme';
 import { MessageBubble } from '../components/chat/MessageBubble';
 import { ChatInput } from '../components/chat/ChatInput';
 import { TypingIndicator } from '../components/chat/TypingIndicator';
+import { MediaLightbox } from '../components/media/MediaLightbox';
 import { useMessages } from '../hooks/useMessages';
 import { usePresence } from '../hooks/usePresence';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useTheme } from '../hooks/useTheme';
+import { downloadMedia } from '../lib/media';
+import { fonts } from '../constants/theme';
 import { AlertIcon, HeartFilledIcon } from '../components/Icons';
 import type { MessageWithDetails } from '../types/database';
 
@@ -48,18 +52,38 @@ function DateSeparator({ date }: { date: string }) {
 
 export default function ChatScreen() {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { messages, sendText, sendVoice, sendImage, isLoading, error } = useMessages();
+  const { messages, sendText, sendVoice, sendImage, sendVideo, isLoading, isUploading, uploadProgress, error } = useMessages();
   const { setIsTyping, partnerPresence } = usePresence();
   const { pickImage, takePhoto, pickVideo } = useMediaPicker();
-  const { bubbleSelf, bubbleOther, bg, backgroundImage, refresh: refreshTheme } = useTheme();
+  const { bubbleSelf, bubbleOther, bg, backgroundImage } = useTheme();
 
   const isPartnerTyping = partnerPresence?.is_typing ?? false;
   const [replyTarget, setReplyTarget] = useState<MessageWithDetails | null>(null);
 
-  // Recharger le thème à chaque montée du composant
+  // Lightbox
+  const [lightbox, setLightbox] = useState<{ storagePath: string; mimeType: string } | null>(null);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const lightboxUrlRef = useRef<string | null>(null);
+
   useEffect(() => {
-    refreshTheme();
-  }, [refreshTheme]);
+    if (!lightbox) { setLightboxSrc(null); return; }
+    let cancelled = false;
+    downloadMedia(lightbox.storagePath)
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        lightboxUrlRef.current = url;
+        setLightboxSrc(url);
+      })
+      .catch(() => { if (!cancelled) setLightboxSrc(null); });
+    return () => {
+      cancelled = true;
+      if (lightboxUrlRef.current) {
+        URL.revokeObjectURL(lightboxUrlRef.current);
+        lightboxUrlRef.current = null;
+      }
+    };
+  }, [lightbox]);
 
   // Scroll en bas aux nouveaux messages
   useEffect(() => {
@@ -105,9 +129,17 @@ export default function ChatScreen() {
   const handleSendVideo = useCallback(async () => {
     const media = await pickVideo();
     if (media) {
-      sendImage(media.uri, media.mimeType, media.width, media.height);
+      sendVideo(media.uri, media.mimeType, media.width, media.height, media.durationMs);
     }
-  }, [pickVideo, sendImage]);
+  }, [pickVideo, sendVideo]);
+
+  const handleOpenImage = useCallback((storagePath: string) => {
+    setLightbox({ storagePath, mimeType: 'image/jpeg' });
+  }, []);
+
+  const handleOpenVideo = useCallback((storagePath: string, mimeType: string) => {
+    setLightbox({ storagePath, mimeType });
+  }, []);
 
   // Messages avec séparateurs de date
   const messagesWithSeparators = useMemo(() => {
@@ -190,25 +222,50 @@ export default function ChatScreen() {
       >
         <div style={{ minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
           {messagesWithSeparators.length === 0 && !isLoading && (
-            <div style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              alignItems: 'center',
-              padding: '0 40px',
-            }}>
-              <HeartFilledIcon size={48} color={staticColors.accent} />
-              <h3 style={{ fontSize: 18, fontWeight: 600, color: staticColors.text, marginBottom: spacing.sm, textAlign: 'center' }}>
-                Notre Bulle
-              </h3>
-              <p style={{
-                fontSize: 16, color: staticColors.textSecondary,
-                textAlign: 'center', lineHeight: '24px',
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.6, ease: 'easeOut' }}
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                padding: '0 40px',
+              }}
+            >
+              <motion.div
+                animate={{
+                  scale: [1, 1.08, 1],
+                  opacity: [0.8, 1, 0.8],
+                }}
+                transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+                style={{ marginBottom: spacing.lg }}
+              >
+                <HeartFilledIcon size={56} color={staticColors.accent} />
+              </motion.div>
+              <h2 style={{
+                fontFamily: fonts.display,
+                fontSize: 32,
+                fontWeight: 400,
+                color: staticColors.primary,
+                marginBottom: spacing.sm,
+                textAlign: 'center',
               }}>
-                Envoie ton premier message,{'\n'}une photo ou une note vocale
+                Notre Bulle
+              </h2>
+              <p style={{
+                fontFamily: fonts.body,
+                fontSize: 17,
+                fontStyle: 'italic',
+                color: staticColors.textSecondary,
+                textAlign: 'center',
+                lineHeight: '26px',
+              }}>
+                Envoie ton premier message,{'\n'}une photo, une vidéo ou une note vocale
               </p>
-            </div>
+            </motion.div>
           )}
 
           {isLoading && messagesWithSeparators.length === 0 && (
@@ -239,6 +296,8 @@ export default function ChatScreen() {
                   index={i}
                   bubbleSelfColor={bubbleSelf}
                   bubbleOtherColor={bubbleOther}
+                  onImageClick={handleOpenImage}
+                  onVideoExpand={handleOpenVideo}
                 />
               </div>
             );
@@ -266,6 +325,37 @@ export default function ChatScreen() {
         onTypingChange={setIsTyping}
         replyTo={replyTarget}
         onCancelReply={handleCancelReply}
+      />
+
+      {/* Barre de progression upload (comme WhatsApp) */}
+      {isUploading && uploadProgress !== null && (
+        <div style={{
+          position: 'absolute',
+          bottom: 60,
+          left: 0, right: 0,
+          height: 3,
+          backgroundColor: staticColors.border,
+        }}>
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${uploadProgress}%` }}
+            transition={{ duration: 0.3, ease: 'easeOut' }}
+            style={{
+              height: '100%',
+              background: `linear-gradient(90deg, ${staticColors.primary}, ${staticColors.accent})`,
+              borderRadius: 1.5,
+            }}
+          />
+        </div>
+      )}
+
+      {/* Lightbox plein écran */}
+      <MediaLightbox
+        open={!!lightbox && !!lightboxSrc}
+        src={lightboxSrc}
+        type={lightbox?.mimeType.startsWith('video/') ? 'video' : 'image'}
+        mimeType={lightbox?.mimeType}
+        onClose={() => setLightbox(null)}
       />
     </div>
   );

@@ -30,6 +30,7 @@ function ControlBtn({
     <motion.button
       whileTap={{ scale: 0.85 }}
       onClick={onPress}
+      aria-label={label}
       style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
         borderRadius: 20, padding: '8px 4px', minWidth: 72,
@@ -61,6 +62,7 @@ function EndCallBtn({ onPress }: { onPress: () => void }) {
     <motion.button
       whileTap={{ scale: 0.88 }}
       onClick={onPress}
+      aria-label="Raccrocher"
       style={{
         width: 56, height: 56, borderRadius: 28,
         backgroundColor: colors.error,

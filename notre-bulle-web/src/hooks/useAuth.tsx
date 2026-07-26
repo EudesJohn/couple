@@ -1,14 +1,22 @@
 // ============================================================
-// Auth Context — état global de l'authentification (PIN only)
+// Auth Context — état global de l'authentification
+// 1ʳᵉ connexion : codes préréglés 1234 (Femme) / 1235 (Homme)
+// Connexions suivantes : vérification du PIN hashé
 // ============================================================
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
-import { supabase } from '../lib/supabase';
-import { isPinSet, isSetupDone, verifyPin, getStoredPinHash } from '../lib/auth';
+import {
+  isPinSet, getStoredPinHash, verifyPin,
+  hashPin, savePinHash, markSetupDone,
+  isFirstLaunch, saveIdentity, getIdentity,
+  PRESET_CODES, type UserIdentity,
+} from '../lib/auth';
 
 interface AuthState {
   isLocked: boolean;
   isFirstLaunch: boolean;
+  identity: UserIdentity | null;
   unlockWithPin: (pin: string) => Promise<boolean>;
+  setupFirstIdentity: (pin: string) => Promise<UserIdentity | null>;
   lock: () => void;
   checkAuth: () => Promise<void>;
 }
@@ -17,46 +25,31 @@ const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLocked, setIsLocked] = useState(true);
-  const [isFirstLaunch, setIsFirstLaunch] = useState(false);
+  const [isFirstLaunchState, setIsFirstLaunchState] = useState(false);
+  const [identity, setIdentity] = useState<UserIdentity | null>(null);
 
   const checkAuth = useCallback(async () => {
-    // 1. Connexion anonyme Supabase
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        await supabase.auth.signInAnonymously();
-      }
-    } catch (err) {
-      console.warn('Supabase anon sign-in skipped:', err);
-    }
-
-    // 2. Vérifier si le PIN est défini
-    const pinExists = await isPinSet();
-    const setupDone = await isSetupDone();
-
-    if (!pinExists) {
-      // Premier lancement
-      setIsFirstLaunch(true);
+    // Vérifier si l'identité existe déjà (localStorage)
+    const firstLaunch = await isFirstLaunch();
+    if (firstLaunch) {
+      setIsFirstLaunchState(true);
       setIsLocked(false);
+      setIdentity(null);
       return;
     }
 
-    if (pinExists && !setupDone) {
-      // PIN défini mais setup pas terminé
-      setIsFirstLaunch(true);
-      setIsLocked(false);
-      return;
-    }
-
-    // PIN défini → verrouillé
-    setIsFirstLaunch(false);
+    // Identité existante → verrouillé
+    setIsFirstLaunchState(false);
     setIsLocked(true);
+    const storedIdentity = await getIdentity();
+    setIdentity(storedIdentity);
   }, []);
 
   useEffect(() => {
     checkAuth();
   }, [checkAuth]);
 
+  /** Déverrouillage normal (PIN hashé) */
   const unlockWithPin = useCallback(async (pin: string): Promise<boolean> => {
     const stored = await isPinSet();
     if (!stored) return false;
@@ -72,12 +65,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return false;
   }, []);
 
+  /**
+   * Première connexion : un code préréglé (1234 / 1235)
+   * identifie la personne et devient son PIN initial.
+   */
+  const setupFirstIdentity = useCallback(async (pin: string): Promise<UserIdentity | null> => {
+    let role: UserIdentity | null = null;
+
+    if (pin === PRESET_CODES.WOMAN) role = 'woman';
+    else if (pin === PRESET_CODES.MAN) role = 'man';
+    else return null;
+
+    // Hacher le PIN + stocker
+    const hash = await hashPin(pin);
+    await savePinHash(hash);
+    await saveIdentity(role);
+    await markSetupDone();
+
+    setIdentity(role);
+    setIsFirstLaunchState(false);
+    setIsLocked(false);
+    return role;
+  }, []);
+
   const lock = useCallback(() => {
     setIsLocked(true);
   }, []);
 
   return (
-    <AuthContext.Provider value={{ isLocked, isFirstLaunch, unlockWithPin, lock, checkAuth }}>
+    <AuthContext.Provider value={{
+      isLocked: isLocked,
+      isFirstLaunch: isFirstLaunchState,
+      identity,
+      unlockWithPin,
+      setupFirstIdentity,
+      lock,
+      checkAuth,
+    }}>
       {children}
     </AuthContext.Provider>
   );

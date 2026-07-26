@@ -79,11 +79,11 @@ class WebRTCManager {
     await this.signalChannel.subscribe();
   }
 
-  async startPublish(): Promise<void> {
+  async startPublish(video: boolean = false): Promise<void> {
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
         audio: true,
-        video: true,
+        video, // Only request camera when it's a video call
       });
 
       this.localStream.getTracks().forEach(track => {
@@ -226,8 +226,9 @@ export async function leaveRoom(roomID?: string): Promise<void> {
   return getWebRTC().leaveRoom(roomID);
 }
 
-export async function startPublish(): Promise<void> {
-  return getWebRTC().startPublish();
+/** @param video – demander la caméra (true pour appel vidéo, false/skip pour audio) */
+export async function startPublish(video?: boolean): Promise<void> {
+  return getWebRTC().startPublish(video ?? false);
 }
 
 export async function stopPublish(): Promise<void> {

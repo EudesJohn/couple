@@ -1,6 +1,6 @@
 // ============================================================
 // Hook — Galerie / Caméra pour images et vidéos (Web)
-// Utilise <input type="file"> au lieu d'expo-image-picker
+// Utilise <input type="file"> (API web native)
 // ============================================================
 import { useState, useCallback } from 'react';
 
@@ -152,7 +152,8 @@ export function useMediaPicker(): UseMediaPickerReturn {
         video.onerror = () => resolve();
         video.src = url;
       });
-      URL.revokeObjectURL(url);
+      // NE PAS revoke — l'URL est encore nécessaire pour uploadMedia() ensuite
+      // (pickImage ne le fait pas non plus)
 
       return result;
     } catch (e) {

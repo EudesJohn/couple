@@ -1,12 +1,16 @@
 // ============================================================
 // Bulle de note vocale — design premium avec waveform
 // Framer Motion pour l'animation de lecture
+//
+// TÉLÉCHARGEMENT VIA API SUPABASE (pas getPublicUrl) :
+// On utilise downloadMedia() qui passe par l'API client avec
+// RLS, ce qui fonctionne même si le bucket n'est pas public.
 // ============================================================
-import { useEffect } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { colors, borderRadius, spacing } from '../../constants/theme';
 import { useVoiceNotes } from '../../hooks/useVoiceNotes';
-import { getMediaUrl } from '../../lib/media';
+import { downloadMedia } from '../../lib/media';
 import { PlayIcon, PauseIcon } from '../Icons';
 
 interface VoiceNoteBubbleProps {
@@ -33,15 +37,45 @@ export function VoiceNoteBubble({ storagePath, durationMs, isOwn, bubbleSelfColo
     stopPlayback,
   } = useVoiceNotes();
 
-  const audioUrl = getMediaUrl(storagePath);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
+
   const isPlaying = playbackState === 'playing';
   const progress = playbackDurationMs > 0 ? playbackPositionMs / playbackDurationMs : 0;
+
+  // Télécharger l'audio via l'API Supabase (utilise RLS, pas besoin de bucket public)
+  useEffect(() => {
+    let cancelled = false;
+
+    downloadMedia(storagePath)
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        blobUrlRef.current = url;
+        setAudioUrl(url);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('Erreur téléchargement audio:', err);
+        setAudioError(err?.message || 'Impossible de charger le message vocal');
+      });
+
+    return () => {
+      cancelled = true;
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+    };
+  }, [storagePath]);
 
   useEffect(() => {
     return () => { stopPlayback(); };
   }, [stopPlayback]);
 
   const handlePress = async () => {
+    if (!audioUrl) return;
     if (playbackState === 'idle') {
       await playUri(audioUrl);
     } else {
@@ -60,6 +94,7 @@ export function VoiceNoteBubble({ storagePath, durationMs, isOwn, bubbleSelfColo
   return (
     <button
       onClick={handlePress}
+      disabled={!audioUrl}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -69,11 +104,12 @@ export function VoiceNoteBubble({ storagePath, durationMs, isOwn, bubbleSelfColo
         minWidth: 200,
         maxWidth: 260,
         border: 'none',
-        cursor: 'pointer',
+        cursor: audioUrl ? 'pointer' : 'default',
         backgroundColor: isOwn ? (bubbleSelfColor || colors.bubbleSelf) : colors.surfaceAlt,
         borderBottomRightRadius: isOwn ? borderRadius.sm : borderRadius.lg,
         borderBottomLeftRadius: !isOwn ? borderRadius.sm : borderRadius.lg,
         fontFamily: 'inherit',
+        opacity: audioUrl ? 1 : 0.6,
       }}
     >
       {/* Play/Pause */}
@@ -83,7 +119,9 @@ export function VoiceNoteBubble({ storagePath, durationMs, isOwn, bubbleSelfColo
         display: 'flex', justifyContent: 'center', alignItems: 'center',
         flexShrink: 0,
       }}>
-        {isPlaying ? (
+        {audioError ? (
+          <span style={{ fontSize: 14, color: colors.error }}>!</span>
+        ) : isPlaying ? (
           <PauseIcon size={14} color={isOwn ? '#FAFAF9' : colors.primary} />
         ) : (
           <PlayIcon size={14} color={isOwn ? '#FAFAF9' : colors.primary} />
@@ -125,7 +163,7 @@ export function VoiceNoteBubble({ storagePath, durationMs, isOwn, bubbleSelfColo
         color: isOwn ? 'rgba(255,255,255,0.7)' : colors.textSecondary,
         flexShrink: 0,
       }}>
-        {isPlaying ? formatTime(playbackPositionMs) : formatTime(durationMs)}
+        {audioError ? 'err' : isPlaying ? formatTime(playbackPositionMs) : formatTime(durationMs)}
       </span>
     </button>
   );

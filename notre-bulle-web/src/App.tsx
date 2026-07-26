@@ -2,7 +2,6 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './hooks/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import LockScreen from './pages/LockScreen';
-import SetupPin from './pages/SetupPin';
 import ChatLayout from './pages/ChatLayout';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
@@ -15,7 +14,6 @@ export default function App() {
         <AuthProvider>
           <Routes>
             <Route path="/" element={<LockScreen />} />
-            <Route path="/setup-pin" element={<SetupPin />} />
             <Route path="/chat" element={<ChatLayout />}>
               <Route index element={<Chat />} />
             </Route>
