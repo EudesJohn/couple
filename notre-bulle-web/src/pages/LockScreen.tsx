@@ -11,6 +11,7 @@ import { colors, spacing, borderRadius, fonts } from '../constants/theme';
 import { useAuth } from '../hooks/useAuth';
 import { getIdentityLabel, type UserIdentity } from '../lib/auth';
 import { LockIcon, HeartFilledIcon, HeartIcon } from '../components/Icons';
+import { requestNotificationPermission } from '../hooks/useNotifications';
 
 const PIN_LENGTH = 4;
 
@@ -149,6 +150,7 @@ export default function LockScreen() {
           const role = await setupFirstIdentity(newPin);
           if (role) {
             setWelcomeRole(role);
+            requestNotificationPermission().catch(() => {});
           } else {
             setIsError(true);
             setErrorMsg('Code invalide · utilise 1234 (Femme) ou 1235 (Homme)');
@@ -161,6 +163,7 @@ export default function LockScreen() {
           const valid = await unlockWithPin(newPin);
           if (valid) {
             setTimeout(() => navigate('/chat', { replace: true }), 350);
+            requestNotificationPermission().catch(() => {});
           } else {
             setAttempts((a) => a + 1);
             setIsError(true);

@@ -19,6 +19,7 @@ import {
 } from '../lib/zego';
 import type { Call, CallType } from '../types/database';
 import { notifyIncomingCall, notifyMissedCall } from './useNotifications';
+import { startRingtone, stopRingtone, playCallEndSound } from '../lib/sounds';
 
 // Compteur pour noms de channel uniques (contourne le bug RealtimeClient.channel()
 // qui ne libère pas les channels après removeChannel)
@@ -307,6 +308,7 @@ export function useCall(): UseCallReturn {
             (updated.status === 'cancelled' || updated.status === 'failed') &&
             currentCallIdRef.current === updated.id
           ) {
+            stopRingtone();
             // Notification si l'appel n'avait pas encore abouti (appel manqué)
             if (callStateRef.current === 'ringing' || callStateRef.current === 'idle') {
               notifyMissedCall(partnerRef.current?.name || 'Partenaire', callType);
@@ -360,6 +362,7 @@ export function useCall(): UseCallReturn {
   // ─── RÉPONDRE ───
   const answerCall = useCallback(async () => {
     if (!incomingCall) return;
+    stopRingtone();
     const callId = incomingCall.id;
     currentCallIdRef.current = callId;
     setIncomingCall(null);
@@ -376,6 +379,7 @@ export function useCall(): UseCallReturn {
   // ─── REJETER ───
   const rejectCall = useCallback(async () => {
     if (!incomingCall) return;
+    stopRingtone();
     await supabase.from('calls').update({ status: 'failed' }).eq('id', incomingCall.id);
     setIncomingCall(null);
     setCallState('idle');
@@ -385,6 +389,8 @@ export function useCall(): UseCallReturn {
   const endCall = useCallback(async () => {
     const callId = currentCallIdRef.current;
     if (!callId) return;
+    stopRingtone();
+    playCallEndSound();
     setCallState('ended');
 
     const remoteId = remoteStreamIdRef.current;

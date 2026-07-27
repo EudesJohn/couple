@@ -16,6 +16,7 @@ import { useTheme } from '../hooks/useTheme';
 import { downloadMedia } from '../lib/media';
 import { fonts } from '../constants/theme';
 import { AlertIcon, HeartFilledIcon } from '../components/Icons';
+import { requestNotificationPermission } from '../hooks/useNotifications';
 import type { MessageWithDetails } from '../types/database';
 
 function formatDateSeparator(dateStr: string): string {
@@ -93,6 +94,11 @@ export default function ChatScreen() {
       }, 100);
     }
   }, [messages.length, isLoading]);
+
+  // Demander la permission de notification au montage (fallback si pas fait depuis LockScreen)
+  useEffect(() => {
+    requestNotificationPermission().catch(() => {});
+  }, []);
 
   const handleCancelReply = useCallback(() => {
     setReplyTarget(null);

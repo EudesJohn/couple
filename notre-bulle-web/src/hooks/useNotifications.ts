@@ -3,6 +3,7 @@
 // Utilise uniquement l'API Web Notification — pas de dépendance mobile
 // ============================================================
 import { useEffect, useRef } from 'react';
+import { playMessageSound, startRingtone, playCallEndSound } from '../lib/sounds';
 
 // ==========================================
 // WEB : Notification API
@@ -68,6 +69,7 @@ export async function notifyNewMessage(
 ): Promise<void> {
   const body = content ?? 'Photo ou media reçu';
   sendWebNotification(senderName, body, { screen: 'chat', conversationId });
+  playMessageSound();
 }
 
 export async function notifyMissedCall(
@@ -76,6 +78,7 @@ export async function notifyMissedCall(
 ): Promise<void> {
   const typeLabel = callType === 'video' ? 'Video' : 'Audio';
   sendWebNotification('Appel manqué', `${typeLabel} — ${callerName} t'a appelé`, { screen: 'chat', callType });
+  playCallEndSound();
 }
 
 export async function notifyIncomingCall(
@@ -84,6 +87,7 @@ export async function notifyIncomingCall(
 ): Promise<void> {
   const typeLabel = callType === 'video' ? 'Video' : 'Audio';
   sendWebNotification(`Appel ${typeLabel}`, `${callerName} t'appelle...`, { screen: 'call', callType });
+  startRingtone();
 }
 
 export async function notifyStatusChange(
