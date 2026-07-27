@@ -100,6 +100,10 @@ export async function saveCycleEntry(entry: CycleEntry): Promise<boolean> {
     }
   );
   if (error) {
+    // 409 / 23505 = duplicate key → déjà marqué, pas une erreur
+    if (error.code === '23505') {
+      return true;
+    }
     console.warn('Erreur sauvegarde entrée cycle:', error.message);
     return false;
   }
