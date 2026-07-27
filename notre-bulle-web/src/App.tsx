@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect } from 'react';
 import { AuthProvider } from './hooks/useAuth';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import LockScreen from './pages/LockScreen';
@@ -6,8 +7,14 @@ import ChatLayout from './pages/ChatLayout';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
 import CallScreen from './pages/CallScreen';
+import { requestNotificationPermission } from './hooks/useNotifications';
 
 export default function App() {
+  useEffect(() => {
+    // Demander la permission de notification au démarrage (PWA)
+    requestNotificationPermission().catch(() => {});
+  }, []);
+
   return (
     <ErrorBoundary>
       <BrowserRouter>

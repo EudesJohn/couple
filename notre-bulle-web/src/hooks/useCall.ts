@@ -126,15 +126,11 @@ export function useCall(): UseCallReturn {
       const p = await getCurrentProfile();
       if (!p) return;
       profileRef.current = { id: p.id, name: p.display_name };
+      // Chargement partenaire non-bloquant (utilisé pour les notifications seulement)
       if (partnerRef.current === null) {
-        const { data: partners } = await supabase
-          .from('profiles')
-          .select('id, display_name')
-          .neq('id', p.id)
-          .limit(1);
-        if (partners?.[0]) {
-          partnerRef.current = { id: partners[0].id, name: partners[0].display_name };
-        }
+        supabase.from('profiles').select('id, display_name').neq('id', p.id).limit(1).then(({ data }) => {
+          if (data?.[0]) partnerRef.current = { id: data[0].id, name: data[0].display_name };
+        }).catch(() => {});
       }
     }
 
@@ -286,9 +282,24 @@ export function useCall(): UseCallReturn {
           if (!me) return;
 
           // L'appelant détecte que le partenaire a répondu (answerer = pas d'offre SDP)
-          if (updated.status === 'answered' && updated.caller_id === me.id && currentCallIdRef.current === updated.id) {
+          if (updated.status === 'answered' && !updated.ended_at && updated.caller_id === me.id && currentCallIdRef.current === updated.id) {
             setCallState('connecting');
             await initZegoCall(updated.id, updated.type, false);
+          }
+
+          // Le partenaire a raccroché (status='answered' avec ended_at)
+          if (updated.status === 'answered' && updated.ended_at && currentCallIdRef.current === updated.id) {
+            if (callStateRef.current !== 'ended') {
+              setOnRemoteStreamUpdate(null);
+              setOnConnectionStateChange(null);
+              await stopPublish().catch(() => {});
+              await leaveRoom(updated.id).catch(() => {});
+              stopCallTimer();
+              currentCallIdRef.current = null;
+              _zegoInitializedCallId = null;
+              setCallState('ended');
+              setTimeout(() => setCallState('idle'), 2000);
+            }
           }
 
           // Le partenaire a annulé / l'appel a échoué

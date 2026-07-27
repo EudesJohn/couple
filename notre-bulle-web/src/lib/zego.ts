@@ -40,6 +40,12 @@ class WebRTCManager {
   private isSpeakerOn: boolean = false;
   private offerSent: boolean = false;
 
+  // Promise pour synchroniser handleOffer avec startPublish.
+  // Quand l'offre SDP arrive avant la fin de getUserMedia, handleOffer
+  // attend cette promesse pour que l'answer SDP inclue les pistes audio/vidéo.
+  private localStreamPromise: Promise<void> | null = null;
+  private resolveLocalStream: (() => void) | null = null;
+
   private iceServers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -96,9 +102,15 @@ class WebRTCManager {
   }
 
   async startPublish(video: boolean = false): Promise<void> {
-    try {
-      if (this.localStream) return; // Déjà capturé
+    if (this.localStream) return; // Déjà capturé
 
+    // Créer la promesse AVANT getUserMedia pour que handleOffer puisse
+    // l'attendre si l'offre SDP arrive avant la fin de la capture.
+    this.localStreamPromise = new Promise<void>(resolve => {
+      this.resolveLocalStream = resolve;
+    });
+
+    try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video, // Only request camera when it's a video call
@@ -108,8 +120,25 @@ class WebRTCManager {
         this.pc?.addTrack(track, this.localStream!);
       });
     } catch (err) {
+      if (video) {
+        // Fallback audio-only si la caméra n'est pas disponible
+        console.warn('[WebRTC] Caméra indisponible, fallback audio only');
+        try {
+          this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          this.localStream.getTracks().forEach(track => {
+            this.pc?.addTrack(track, this.localStream!);
+          });
+          return; // Succès audio-only
+        } catch (audioErr) {
+          console.error('[WebRTC] Micro indisponible aussi:', audioErr);
+        }
+      }
       console.error('[WebRTC] Erreur startPublish:', err);
       throw err;
+    } finally {
+      this.resolveLocalStream?.();
+      this.localStreamPromise = null;
+      this.resolveLocalStream = null;
     }
   }
 
@@ -123,6 +152,13 @@ class WebRTCManager {
 
   async handleOffer(payload: { sdp: string; type: string }): Promise<void> {
     if (!this.pc) return;
+
+    // Attendre que le flux local soit disponible (getUserMedia + addTrack)
+    // pour que l'answer SDP inclue les pistes audio/vidéo.
+    // Résout le race condition : l'offre arrive avant la fin de getUserMedia.
+    if (this.localStreamPromise) {
+      await this.localStreamPromise;
+    }
 
     // Polite peer : si on a déjà créé une offre locale, rollback pour accepter
     // l'offre distante (évite la collision SDP quand les deux publient)

@@ -150,13 +150,22 @@ export default function CallScreen() {
 
   const [webRTCStreams, setWebRTCStreams] = useState<{ local: MediaStream | null; remote: MediaStream | null }>({ local: null, remote: null });
 
-  // Web: attacher les flux vidéo aux éléments <video>
+  // Ref pour éviter la stale closure dans l'interval
+  const streamsRef = useRef(webRTCStreams);
+  streamsRef.current = webRTCStreams;
+
+  // Web: attacher les flux aux éléments <video>/<audio>
   useEffect(() => {
     const interval = setInterval(() => {
       const streams = getWebRTCStreams();
-      if (streams.local !== webRTCStreams.local || streams.remote !== webRTCStreams.remote) {
+      const cur = streamsRef.current;
+      if (streams.local !== cur.local || streams.remote !== cur.remote) {
         setWebRTCStreams({ local: streams.local, remote: streams.remote });
       }
+      // Mise à jour directe de srcObject pour éviter les problèmes de timing
+      // quand l'élément se monte après que le flux est déjà disponible
+      if (localVideoRef.current) localVideoRef.current.srcObject = streams.local;
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = streams.remote;
     }, 500);
     return () => clearInterval(interval);
   }, []);
@@ -253,32 +262,36 @@ export default function CallScreen() {
 
       {/* APPEL AUDIO */}
       {!isVideo && (
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', damping: 15, stiffness: 120 }}
-          style={{
-            flex: 1,
-            display: 'flex', flexDirection: 'column',
-            justifyContent: 'center', alignItems: 'center',
-            padding: '0 40px',
-            position: 'relative', zIndex: 1,
-          }}
-        >
-          <PulsingRing isCalling={isCalling} />
-          <h1 style={{ fontSize: 28, fontWeight: 700, color: '#FAFAF9', marginBottom: 8, letterSpacing: -0.5 }}>
-            Ma chérie
-          </h1>
-          <motion.span
-            key={callState}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.2 }}
-            style={{ fontSize: 15, color: statusColor, textAlign: 'center' }}
+        <>
+          {/* Élément audio caché pour jouer le flux distant */}
+          <audio ref={remoteVideoRef} autoPlay playsInline style={{ display: 'none' }} />
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ type: 'spring', damping: 15, stiffness: 120 }}
+            style={{
+              flex: 1,
+              display: 'flex', flexDirection: 'column',
+              justifyContent: 'center', alignItems: 'center',
+              padding: '0 40px',
+              position: 'relative', zIndex: 1,
+            }}
           >
-            {statusText}
-          </motion.span>
-        </motion.div>
+            <PulsingRing isCalling={isCalling} />
+            <h1 style={{ fontSize: 28, fontWeight: 700, color: '#FAFAF9', marginBottom: 8, letterSpacing: -0.5 }}>
+              Ma chérie
+            </h1>
+            <motion.span
+              key={callState}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.2 }}
+              style={{ fontSize: 15, color: statusColor, textAlign: 'center' }}
+            >
+              {statusText}
+            </motion.span>
+          </motion.div>
+        </>
       )}
 
       {/* TIMER VIDÉO */}
