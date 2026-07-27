@@ -15,6 +15,7 @@ interface MessageBubbleProps {
   message: MessageWithDetails;
   isOwn: boolean;
   index?: number;
+  myProfileId: string | null;
   bubbleSelfColor?: string;
   bubbleOtherColor?: string;
   onImageClick?: (storagePath: string) => void;
@@ -49,7 +50,7 @@ function MessageStatus({ statuses, myProfileId }: { statuses: any[]; myProfileId
     return <DoubleCheckIcon size={14} color="rgba(255,255,255,0.6)" />;
   }
   if (highestStatus.status === 'read') {
-    return <DoubleCheckIcon size={14} color={colors.accent} />;
+    return <DoubleCheckIcon size={14} color="#34B759" />;
   }
   return null;
 }
@@ -168,7 +169,7 @@ function CallLogBubble({ message, isOwn, selfColor, otherColor }: {
   );
 }
 
-export function MessageBubble({ message, isOwn, index = 0, bubbleSelfColor, bubbleOtherColor, onImageClick, onVideoExpand }: MessageBubbleProps) {
+export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSelfColor, bubbleOtherColor, onImageClick, onVideoExpand }: MessageBubbleProps) {
   const attachments = message.attachments || [];
   const hasAttachment = attachments.length > 0;
   const attachment = attachments[0];
@@ -283,7 +284,7 @@ export function MessageBubble({ message, isOwn, index = 0, bubbleSelfColor, bubb
             {formatTime(message.created_at)}
           </span>
           {isOwn && (
-            <MessageStatus statuses={message.statuses} myProfileId={null} />
+            <MessageStatus statuses={message.statuses} myProfileId={myProfileId} />
           )}
         </div>
       </div>

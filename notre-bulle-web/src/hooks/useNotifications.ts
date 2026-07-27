@@ -17,9 +17,30 @@ async function requestWebNotificationPermission(): Promise<boolean> {
   return permission === 'granted';
 }
 
-function sendWebNotification(title: string, body: string, data?: Record<string, any>) {
+async function sendWebNotification(title: string, body: string, data?: Record<string, any>) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
 
+  // 1. Essayer le Service Worker (nécessaire pour iOS PWA standalone
+  //    où new Notification() est silencieusement bloqué)
+  if (navigator.serviceWorker?.ready) {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      await reg.showNotification(title, {
+        body,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        tag: 'notre-bulle',
+        data,
+        vibrate: [200, 100, 200],
+        requireInteraction: true,
+      } as NotificationOptions);
+      return; // Succès
+    } catch {
+      // Fallback à new Notification()
+    }
+  }
+
+  // 2. Fallback Desktop / Android Chrome
   try {
     const notif = new Notification(title, {
       body,
@@ -40,7 +61,6 @@ function sendWebNotification(title: string, body: string, data?: Record<string, 
       notif.close();
     };
 
-    // Auto close after 5s
     setTimeout(() => notif.close(), 5000);
   } catch (err) {
     console.warn('Web notification error:', err);

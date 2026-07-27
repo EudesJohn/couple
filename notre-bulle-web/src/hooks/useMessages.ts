@@ -40,6 +40,9 @@ export function useMessages(): UseMessagesReturn {
   const myProfileIdRef = useRef<string | null>(null);
   const isLoadingRef = useRef(true);
 
+  // Set des IDs de messages déjà marqués "lu" pour éviter les doublons
+  const markedReadRef = useRef<Set<string>>(new Set());
+
   // ==========================================
   // Récupération de l'ID du profil
   // ==========================================
@@ -257,6 +260,70 @@ export function useMessages(): UseMessagesReturn {
       supabase.removeChannel(statusChannel);
     };
   }, [convId]);
+
+  // ==========================================
+  // EFFET 3 — Marquage "lu" automatique
+  // Dès que des messages du partenaire sont affichés,
+  // on insère/update message_status → 'read'
+  // ==========================================
+  useEffect(() => {
+    if (!convId || !myProfileIdRef.current || messages.length === 0) return;
+
+    const myId = myProfileIdRef.current;
+
+    // Messages du partenaire non encore marqués comme lus
+    const toMark = messages.filter((msg) => {
+      if (msg.sender_id === myId) return false; // Mes messages
+      if (markedReadRef.current.has(msg.id)) return false; // Déjà traité
+      return true;
+    });
+
+    if (toMark.length === 0) return;
+
+    // Marquer chaque message comme lu
+    for (const msg of toMark) {
+      markedReadRef.current.add(msg.id);
+
+      supabase
+        .from('message_status')
+        .upsert(
+          {
+            message_id: msg.id,
+            profile_id: myId,
+            status: 'read',
+          },
+          { onConflict: 'message_id,profile_id' }
+        )
+        .then(() => {
+          // Mettre à jour l'état local pour que la coche devienne verte
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== msg.id) return m;
+              const newStatus: MessageStatus = {
+                message_id: msg.id,
+                profile_id: myId,
+                status: 'read',
+                read_at: new Date().toISOString(),
+                created_at: new Date().toISOString(),
+              };
+              const existing = m.statuses || [];
+              const idx = existing.findIndex(
+                (s: any) => s.profile_id === myId
+              );
+              let updated;
+              if (idx >= 0) {
+                updated = [...existing];
+                updated[idx] = newStatus;
+              } else {
+                updated = [...existing, newStatus];
+              }
+              return { ...m, statuses: updated };
+            })
+          );
+        })
+        .catch(() => {});
+    }
+  }, [convId, messages]);
 
   // ==========================================
   // Créer un message

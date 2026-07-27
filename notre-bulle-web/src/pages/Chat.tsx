@@ -289,6 +289,7 @@ export default function ChatScreen() {
                   message={msg}
                   isOwn={isOwn}
                   index={i}
+                  myProfileId={myProfileId}
                   bubbleSelfColor={bubbleSelf}
                   bubbleOtherColor={bubbleOther}
                   onImageClick={handleOpenImage}
