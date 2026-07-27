@@ -53,7 +53,7 @@ function DateSeparator({ date }: { date: string }) {
 
 export default function ChatScreen() {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { messages, sendText, sendVoice, sendImage, isLoading, isUploading, uploadProgress, myProfileId, error } = useMessages();
+  const { messages, sendText, sendVoice, sendImage, deleteMessage, isLoading, isUploading, uploadProgress, myProfileId, error } = useMessages();
   const { setIsTyping, partnerPresence } = usePresence();
   const { pickImage, takePhoto } = useMediaPicker();
   const { bubbleSelf, bubbleOther, bg, backgroundImage } = useTheme();
@@ -294,6 +294,7 @@ export default function ChatScreen() {
                   bubbleOtherColor={bubbleOther}
                   onImageClick={handleOpenImage}
                   onVideoExpand={handleOpenVideo}
+                  onDelete={deleteMessage}
                 />
               </div>
             );

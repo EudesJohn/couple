@@ -3,12 +3,13 @@
 // Design premium, secondes, statuts (envoyé/distribué/lu)
 // ============================================================
 import { motion } from 'framer-motion';
+import { useState, useRef, useCallback } from 'react';
 import { colors, spacing, borderRadius } from '../../constants/theme';
 import { VoiceNoteBubble } from '../media/VoiceNoteBubble';
 import { StorageImage } from '../media/StorageImage';
 import { VideoBubble } from '../media/VideoBubble';
 import { getMediaType } from '../../lib/media';
-import { DoubleCheckIcon, ReplyIcon, PhoneIcon, VideoIcon, PhoneOffIcon } from '../Icons';
+import { DoubleCheckIcon, ReplyIcon, PhoneIcon, VideoIcon, PhoneOffIcon, TrashIcon } from '../Icons';
 import type { MessageWithDetails } from '../../types/database';
 
 interface MessageBubbleProps {
@@ -20,6 +21,7 @@ interface MessageBubbleProps {
   bubbleOtherColor?: string;
   onImageClick?: (storagePath: string) => void;
   onVideoExpand?: (storagePath: string, mimeType: string) => void;
+  onDelete?: (messageId: string) => void;
 }
 
 function formatTime(createdAt: string): string {
@@ -169,7 +171,50 @@ function CallLogBubble({ message, isOwn, selfColor, otherColor }: {
   );
 }
 
-export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSelfColor, bubbleOtherColor, onImageClick, onVideoExpand }: MessageBubbleProps) {
+// Hook personnalisé pour détecter un appui long (mobile) ou clic droit (desktop)
+function useLongPress(
+  onLongPress: () => void,
+  { delay = 600 } = {}
+) {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const start = useCallback(() => {
+    timerRef.current = setTimeout(onLongPress, delay);
+  }, [onLongPress, delay]);
+
+  const cancel = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  return {
+    onTouchStart: start,
+    onTouchEnd: cancel,
+    onTouchMove: cancel,
+    onContextMenu: (e: React.MouseEvent) => {
+      e.preventDefault();
+      onLongPress();
+    },
+  } as const;
+}
+
+export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSelfColor, bubbleOtherColor, onImageClick, onVideoExpand, onDelete }: MessageBubbleProps) {
+  const [showDeleteMenu, setShowDeleteMenu] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const handleDelete = useCallback(() => {
+    onDelete?.(message.id);
+    setShowDeleteMenu(false);
+    setConfirmDelete(false);
+  }, [onDelete, message.id]);
+
+  const longPressHandlers = useLongPress(() => {
+    // Seulement les propres messages peuvent être supprimés
+    if (isOwn && onDelete) setShowDeleteMenu(true);
+  });
+
   const attachments = message.attachments || [];
   const hasAttachment = attachments.length > 0;
   const attachment = attachments[0];
@@ -178,27 +223,13 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
   const otherColor = bubbleOtherColor || colors.bubbleOther;
   const hasReply = !!message.reply_to_message?.id;
 
-  // Journal d'appel → rendu spécial
-  if (message.type === 'call') {
-    return <CallLogBubble message={message} isOwn={isOwn} selfColor={selfColor} otherColor={otherColor} />;
-  }
+  const bubbleContent = (() => {
+    // Journal d'appel → rendu spécial
+    if (message.type === 'call') {
+      return <CallLogBubble message={message} isOwn={isOwn} selfColor={selfColor} otherColor={otherColor} />;
+    }
 
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 12, scale: 0.97 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{
-        duration: 0.35,
-        delay: Math.min(index * 0.025, 0.3),
-        ease: [0.25, 0.1, 0.25, 1],
-      }}
-      style={{
-        display: 'flex',
-        justifyContent: isOwn ? 'flex-end' : 'flex-start',
-        marginBottom: spacing.sm,
-        padding: `0 ${spacing.lg}px`,
-      }}
-    >
+    return (
       <div style={{
         maxWidth: '78%',
         backgroundColor: isOwn ? selfColor : otherColor,
@@ -208,7 +239,65 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
         borderBottomLeftRadius: !isOwn ? borderRadius.sm : borderRadius.lg,
         border: !isOwn ? `1px solid ${colors.borderLight}` : undefined,
         boxShadow: `0 2px 6px ${isOwn ? colors.glowBurgundy : colors.shadow}`,
+        position: 'relative',
       }}>
+        {/* Overlay de suppression */}
+        {showDeleteMenu && isOwn && (
+          <div style={{
+            position: 'absolute', inset: 0,
+            borderRadius: borderRadius.lg,
+            borderBottomRightRadius: isOwn ? borderRadius.sm : borderRadius.lg,
+            borderBottomLeftRadius: !isOwn ? borderRadius.sm : borderRadius.lg,
+            backgroundColor: 'rgba(0,0,0,0.6)',
+            display: 'flex', justifyContent: 'center', alignItems: 'center',
+            zIndex: 5,
+          }}>
+            {confirmDelete ? (
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                <span style={{ color: '#FAFAF9', fontSize: 13, fontWeight: 500 }}>
+                  Supprimer ?
+                </span>
+                <button
+                  onClick={handleDelete}
+                  style={{
+                    backgroundColor: colors.error,
+                    color: '#FAFAF9', border: 'none',
+                    borderRadius: borderRadius.sm, padding: '8px 16px',
+                    fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  }}
+                >
+                  Oui
+                </button>
+                <button
+                  onClick={() => { setShowDeleteMenu(false); setConfirmDelete(false); }}
+                  style={{
+                    backgroundColor: 'rgba(255,255,255,0.2)',
+                    color: '#FAFAF9', border: 'none',
+                    borderRadius: borderRadius.sm, padding: '8px 16px',
+                    fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit',
+                  }}
+                >
+                  Annuler
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                style={{
+                  backgroundColor: 'transparent', border: 'none',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                  fontFamily: 'inherit',
+                }}
+              >
+                <TrashIcon size={18} color={colors.error} />
+                <span style={{ color: colors.error, fontSize: 14, fontWeight: 600 }}>
+                  Supprimer
+                </span>
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Quoted message (reply) */}
         {hasReply && message.reply_to_message && (
           <QuotedMessage replyTo={message.reply_to_message} isOwn={isOwn} />
@@ -288,6 +377,32 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
           )}
         </div>
       </div>
-    </motion.div>
+    );
+  })();
+
+  // Appliquer les handlers long-press sur le conteneur principal
+  return (
+    <div
+      {...(isOwn && onDelete ? longPressHandlers : {})}
+      style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 12, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{
+          duration: 0.35,
+          delay: Math.min(index * 0.025, 0.3),
+          ease: [0.25, 0.1, 0.25, 1],
+        }}
+        style={{
+          display: 'flex',
+          justifyContent: isOwn ? 'flex-end' : 'flex-start',
+          marginBottom: spacing.sm,
+          padding: `0 ${spacing.lg}px`,
+        }}
+      >
+        {bubbleContent}
+      </motion.div>
+    </div>
   );
 }

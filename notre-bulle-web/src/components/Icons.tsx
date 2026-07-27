@@ -150,3 +150,6 @@ export const SparkleIcon = createIcon('M12 2l1.5 5.5L19 9l-5.5 1.5L12 16l-1.5-5.
 
 // Répondre (flèche coudée vers la gauche)
 export const ReplyIcon = createIcon('M9 10l-5 5 5 5 M20 4v7a4 4 0 0 1-4 4H4');
+
+// Poubelle (supprimer)
+export const TrashIcon = createIcon('M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6');

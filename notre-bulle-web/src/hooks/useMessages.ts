@@ -22,6 +22,7 @@ interface UseMessagesReturn {
   sendText: (content: string, replyToId?: string) => Promise<void>;
   sendVoice: (uri: string, durationMs: number) => Promise<void>;
   sendImage: (uri: string, mimeType: string, width: number, height: number) => Promise<void>;
+  deleteMessage: (messageId: string) => Promise<boolean>;
   isLoading: boolean;
   isUploading: boolean;
   uploadProgress: number | null;
@@ -454,8 +455,31 @@ export function useMessages(): UseMessagesReturn {
     }
   }, [createMessage]);
 
+  // ==========================================
+  // SUPPRESSION D'UN MESSAGE
+  // ==========================================
+  const deleteMessage = useCallback(async (messageId: string): Promise<boolean> => {
+    const profileId = myProfileId || getProfileId();
+    if (!convId || !profileId) return false;
+
+    const { error } = await supabase
+      .from('messages')
+      .delete()
+      .eq('id', messageId)
+      .eq('sender_id', profileId); // Seulement ses propres messages
+
+    if (error) {
+      console.warn('Erreur suppression message:', error.message);
+      return false;
+    }
+
+    // Supprimer du state local immédiatement
+    setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    return true;
+  }, [convId, myProfileId]);
+
   return {
-    messages, sendText, sendVoice, sendImage,
+    messages, sendText, sendVoice, sendImage, deleteMessage,
     isLoading, isUploading, uploadProgress, myProfileId, error,
   };
 }
