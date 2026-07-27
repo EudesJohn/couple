@@ -128,7 +128,7 @@ export function useCall(): UseCallReturn {
       profileRef.current = { id: p.id, name: p.display_name };
       // Chargement partenaire non-bloquant (utilisé pour les notifications seulement)
       if (partnerRef.current === null) {
-        supabase.from('profiles').select('id, display_name').neq('id', p.id).limit(1).then(({ data }) => {
+        supabase.from('profiles').select('id, display_name').neq('id', p.id).limit(1).then(({ data }: { data: { id: string; display_name: string }[] | null }) => {
           if (data?.[0]) partnerRef.current = { id: data[0].id, name: data[0].display_name };
         }).catch(() => {});
       }
