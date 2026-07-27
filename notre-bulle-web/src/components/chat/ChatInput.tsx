@@ -99,13 +99,14 @@ export function ChatInput({
     setRecordedDuration(0);
   }, [cancelRecording]);
 
-  const handleSendRecordedVoice = useCallback(() => {
+  const handleSendRecordedVoice = useCallback(async () => {
     if (recordedUri && recordedDuration > 0) {
       onSendVoice(recordedUri, recordedDuration);
       setRecordedUri(null);
       setRecordedDuration(0);
+      await cancelRecording(); // ← ferme le recorder après envoi
     }
-  }, [recordedUri, recordedDuration, onSendVoice]);
+  }, [recordedUri, recordedDuration, onSendVoice, cancelRecording]);
 
   if (showRecorder) {
     return (
