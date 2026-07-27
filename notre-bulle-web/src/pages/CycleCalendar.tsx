@@ -10,10 +10,8 @@ import {
   ChevronLeftIcon, ChevronRightIcon,
   PlusIcon, CheckIcon,
 } from '../components/Icons';
-import { supabase } from '../lib/supabase';
-import { getMyProfileId } from '../lib/profile';
+import { getMyProfileId, getPartnerProfileId } from '../lib/profile';
 import {
-  getCycleEntries,
   getCycleEntriesByProfileIds,
   saveCycleEntry,
   deleteCycleEntry,
@@ -69,19 +67,14 @@ function useCycleData() {
 
     const load = async () => {
       try {
-        // Trouver tous les membres de la conversation
-        const { data: convMembers } = await supabase
-          .from('conversation_members')
-          .select('profile_id');
+        // Charger les entrées des DEUX profils (calendrier partagé)
+        // On utilise les IDs directement depuis la config au lieu de
+        // conversation_members pour éviter les problèmes de RLS.
+        const myId = getMyProfileId();
+        const partnerId = getPartnerProfileId();
+        const allProfileIds = [myId, partnerId].filter(Boolean) as string[];
 
-        const allProfileIds: string[] = convMembers
-          ?.map((m: any) => m.profile_id)
-          .filter(Boolean) ?? [];
-
-        // Charger les entrées de TOUS les membres (calendrier partagé)
-        const allEntries = allProfileIds.length > 0
-          ? await getCycleEntriesByProfileIds(allProfileIds)
-          : await getCycleEntries(profileId);
+        const allEntries = await getCycleEntriesByProfileIds(allProfileIds);
 
         setEntries(allEntries);
       } catch (err: any) {

@@ -87,17 +87,19 @@ export interface CycleStats {
 // --- Supabase CRUD ---
 
 export async function saveCycleEntry(entry: CycleEntry): Promise<boolean> {
-  const { error } = await supabase.from('cycle_entries').insert({
-    profile_id: entry.profile_id,
-    event_date: entry.event_date,
-    event_type: entry.event_type,
-    notes: entry.notes || null,
-  });
-  if (error) {
-    // 409 / 23505 = doublon (déjà marqué) → pas une vraie erreur
-    if (error.code === '23505' || (error as any)?.status === 409) {
-      return true;
+  const { error } = await supabase.from('cycle_entries').insert(
+    {
+      profile_id: entry.profile_id,
+      event_date: entry.event_date,
+      event_type: entry.event_type,
+      notes: entry.notes || null,
+    },
+    {
+      onConflict: 'profile_id,event_date,event_type',
+      ignoreDuplicates: true,
     }
+  );
+  if (error) {
     console.warn('Erreur sauvegarde entrée cycle:', error.message);
     return false;
   }
