@@ -76,13 +76,6 @@ export function ChatInput({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSendText();
-    }
-  };
-
   const handleMediaPress = () => {
     setMediaSheetVisible(true);
   };
@@ -181,7 +174,6 @@ export function ChatInput({
             ref={textareaRef}
             value={text}
             onChange={(e) => handleChangeText(e.target.value)}
-            onKeyDown={handleKeyDown}
             placeholder={replyTo ? 'Ecris ta réponse…' : 'Écris quelque chose…'}
             maxLength={2000}
             rows={1}
