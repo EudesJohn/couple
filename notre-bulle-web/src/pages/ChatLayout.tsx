@@ -10,7 +10,7 @@ import { usePresence } from '../hooks/usePresence';
 import { useCall } from '../hooks/useCall';
 import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
-import { getPartnerProfileId } from '../lib/profile';
+import { getActualPartnerProfileId } from '../lib/profile';
 import { downloadMedia } from '../lib/media';
 import { PhoneIcon, VideoIcon, SettingsIcon, HeartFilledIcon, CycleIcon } from '../components/Icons';
 import { CallTypeSheet } from '../components/call/CallTypeSheet';
@@ -32,7 +32,7 @@ export default function ChatLayout() {
     let cancelled = false;
 
     async function loadPartnerAvatar() {
-      const partnerProfileId = getPartnerProfileId();
+      const partnerProfileId = getActualPartnerProfileId();
       if (!partnerProfileId) return;
 
       const { data, error } = await supabase

@@ -11,7 +11,7 @@ import { hashPin, savePinHash, verifyPin, getStoredPinHash } from '../lib/auth';
 import { getTheme, saveTheme, saveBackgroundImage, removeBackgroundImage, getBackgroundImage, type ChatTheme } from '../lib/settings';
 import { compressImage, downloadMedia } from '../lib/media';
 import { clearProfileCache } from '../lib/cache';
-import { getMyProfileId } from '../lib/profile';
+import { getOwnProfileId } from '../lib/profile';
 import {
   BackIcon, SettingsIcon, HeartFilledIcon, UserIcon, LockIcon,
   EditIcon, CameraIcon, CheckIcon, CloseIcon, ImageIcon,
@@ -126,8 +126,9 @@ export default function SettingsScreen() {
   const [pinError, setPinError] = useState('');
 
   // Get profile ID (pas de session Supabase, on utilise la config)
+  // Utilise getOwnProfileId() pour cibler le vrai profil (photo, pseudo)
   const getUserId = useCallback(async (): Promise<string | null> => {
-    return getMyProfileId() || null;
+    return getOwnProfileId() || null;
   }, []);
 
   // Load profile

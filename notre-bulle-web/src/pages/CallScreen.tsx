@@ -242,6 +242,8 @@ export default function CallScreen() {
         {isVideo && (
           <div style={{ position: 'absolute', inset: 0 }}>
             {/* Vidéo distante — toujours montée pour éviter le saut d'image */}
+            {/* scaleX(-1) corrige le miroir de la caméra frontale pour que
+                l'autre personne soit vue à l'endroit (même principe que le PiP local) */}
             <video
               ref={remoteVideoRef}
               autoPlay
@@ -250,6 +252,7 @@ export default function CallScreen() {
                 width: '100%', height: '100%', objectFit: 'cover',
                 opacity: isConnected && webRTCStreams.remote ? 1 : 0,
                 transition: 'opacity 0.3s ease',
+                transform: 'scaleX(-1)',
               }}
             />
             {/* Placeholder superposé tant que le flux n'est pas prêt */}
