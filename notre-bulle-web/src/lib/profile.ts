@@ -8,6 +8,10 @@ import type { UserIdentity } from './auth';
 
 const IDENTITY_KEY = 'notre-bulle.identity';
 
+export function getCurrentIdentity(): UserIdentity | null {
+  return getStoredIdentity();
+}
+
 function getStoredIdentity(): UserIdentity | null {
   try {
     const val = localStorage.getItem(IDENTITY_KEY);
@@ -22,18 +26,19 @@ function getStoredIdentity(): UserIdentity | null {
  * Retourne l'ID du profil de l'utilisateur connecté,
  * en fonction de son identité (woman/man).
  *
- * Si l'identité est 'woman' → utilise VITE_PARTNER_PROFILE_ID
- * Si l'identité est 'man'   → utilise VITE_MY_PROFILE_ID
- * Si pas d'identité         → utilise VITE_MY_PROFILE_ID (comportement legacy)
+ * VITE_MY_PROFILE_ID     = UUID de la femme (celle qui configure l'app)
+ * VITE_PARTNER_PROFILE_ID = UUID de l'homme
+ *
+ * getMyProfileId():  woman → myProfileId,  man → partnerProfileId
+ * getPartnerProfileId(): woman → partnerProfileId, man → myProfileId
  */
 export function getMyProfileId(): string {
   const identity = getStoredIdentity();
   if (identity === 'woman') {
-    // La femme utilise le "partner" ID
-    return config.partnerProfileId || config.myProfileId || '';
+    return config.myProfileId || config.partnerProfileId || '';
   }
-  // L'homme (ou legacy) utilise le "my" ID
-  return config.myProfileId || config.partnerProfileId || '';
+  // Homme (ou legacy)
+  return config.partnerProfileId || config.myProfileId || '';
 }
 
 /**
@@ -42,9 +47,9 @@ export function getMyProfileId(): string {
 export function getPartnerProfileId(): string {
   const identity = getStoredIdentity();
   if (identity === 'woman') {
-    // Pour la femme, le partenaire est l'homme → VITE_MY_PROFILE_ID
-    return config.myProfileId || config.partnerProfileId || '';
+    // Pour la femme, le partenaire est l'homme
+    return config.partnerProfileId || config.myProfileId || '';
   }
-  // Pour l'homme (ou legacy), le partenaire est la femme → VITE_PARTNER_PROFILE_ID
-  return config.partnerProfileId || config.myProfileId || '';
+  // Pour l'homme (ou legacy), le partenaire est la femme
+  return config.myProfileId || config.partnerProfileId || '';
 }

@@ -10,7 +10,7 @@ import {
   ChevronLeftIcon, ChevronRightIcon,
   PlusIcon, CheckIcon,
 } from '../components/Icons';
-import { getMyProfileId, getPartnerProfileId } from '../lib/profile';
+import { getMyProfileId, getPartnerProfileId, getCurrentIdentity } from '../lib/profile';
 import {
   getCycleEntriesByProfileIds,
   saveCycleEntry,
@@ -111,7 +111,7 @@ function useCycleData() {
       );
 
       if (existing) {
-        const ok = await deleteCycleEntry(profileId, dateStr, 'period');
+        const ok = await deleteCycleEntry(existing.profile_id, dateStr, 'period');
         if (ok) {
           setEntries((prev) =>
             prev.filter((e) => !(e.event_date === dateStr && e.event_type === 'period'))
@@ -147,15 +147,13 @@ function useCycleData() {
     }
   }, [profileId]); // plus de dépendance entries → plus de closure obsolète
 
-  // Seule celle qui a des entrées "period" peut marquer (ou tout le monde si première utilisation)
+  // Seule la femme peut marquer les règles.
+  // On utilise l'identité directement (pas trackers.has(profileId)) pour que ça
+  // continue de fonctionner après le swap de getMyProfileId().
   const canMark = useMemo(() => {
     if (!profileId) return false;
-    const trackers = new Set(
-      entries.filter((e) => e.event_type === 'period').map((e) => e.profile_id)
-    );
-    if (trackers.size === 0) return true; // premier marquage possible
-    return trackers.has(profileId);
-  }, [entries, profileId]);
+    return getCurrentIdentity() === 'woman';
+  }, [profileId]);
 
   return {
     profileId,
