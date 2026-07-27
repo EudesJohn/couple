@@ -94,6 +94,10 @@ export async function saveCycleEntry(entry: CycleEntry): Promise<boolean> {
     notes: entry.notes || null,
   });
   if (error) {
+    // 409 / 23505 = doublon (déjà marqué) → pas une vraie erreur
+    if (error.code === '23505' || (error as any)?.status === 409) {
+      return true;
+    }
     console.warn('Erreur sauvegarde entrée cycle:', error.message);
     return false;
   }

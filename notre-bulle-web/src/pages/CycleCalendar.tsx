@@ -122,14 +122,20 @@ function useCycleData() {
         event_type: 'period',
       });
       if (ok) {
-        const newEntry: CycleEntry = {
-          id: crypto.randomUUID(),
-          profile_id: profileId,
-          event_date: dateStr,
-          event_type: 'period',
-          created_at: new Date().toISOString(),
-        };
-        setEntries((prev) => [...prev, newEntry]);
+        setEntries((prev) => {
+          // Éviter les doublons (race condition si clic rapide)
+          if (prev.some((e) => e.event_date === dateStr && e.event_type === 'period')) {
+            return prev;
+          }
+          const newEntry: CycleEntry = {
+            id: crypto.randomUUID(),
+            profile_id: profileId!,
+            event_date: dateStr,
+            event_type: 'period',
+            created_at: new Date().toISOString(),
+          };
+          return [...prev, newEntry];
+        });
       }
       return ok;
     }
