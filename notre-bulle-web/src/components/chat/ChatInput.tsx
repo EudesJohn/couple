@@ -2,7 +2,7 @@
 // ChatInput premium — Texte, médias, notes vocales, Reply Preview
 // Design Burgundy & Gold, Framer Motion
 // ============================================================
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { colors, borderRadius, spacing } from '../../constants/theme';
 import { VoiceRecorder } from '../media/VoiceRecorder';
@@ -33,6 +33,7 @@ export function ChatInput({
 }: ChatInputProps) {
   const [text, setText] = useState('');
   const [mediaSheetVisible, setMediaSheetVisible] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const {
     recordingState,
@@ -53,6 +54,13 @@ export function ChatInput({
     (value: string) => {
       setText(value);
       onTypingChange?.(value.length > 0);
+
+      // Auto-grow : la hauteur suit le contenu
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+        const newHeight = Math.min(textareaRef.current.scrollHeight, 120);
+        textareaRef.current.style.height = `${newHeight}px`;
+      }
     },
     [onTypingChange]
   );
@@ -62,6 +70,10 @@ export function ChatInput({
     onSendText(text.trim());
     setText('');
     onTypingChange?.(false);
+    // Reset hauteur
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -166,6 +178,7 @@ export function ChatInput({
           maxHeight: 100,
         }}>
           <textarea
+            ref={textareaRef}
             value={text}
             onChange={(e) => handleChangeText(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -183,7 +196,8 @@ export function ChatInput({
               background: 'transparent',
               resize: 'none',
               fontFamily: 'inherit',
-              maxHeight: 80,
+              maxHeight: 120,
+              overflow: 'auto',
             }}
           />
         </div>
