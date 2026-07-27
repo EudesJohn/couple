@@ -135,6 +135,16 @@ function useCycleData() {
     }
   }, [profileId, entries]);
 
+  // Seule celle qui a des entrées "period" peut marquer (ou tout le monde si première utilisation)
+  const canMark = useMemo(() => {
+    if (!profileId) return false;
+    const trackers = new Set(
+      entries.filter((e) => e.event_type === 'period').map((e) => e.profile_id)
+    );
+    if (trackers.size === 0) return true; // premier marquage possible
+    return trackers.has(profileId);
+  }, [entries, profileId]);
+
   return {
     profileId,
     entries,
@@ -143,6 +153,7 @@ function useCycleData() {
     predicting,
     error,
     togglePeriodDay,
+    canMark,
   };
 }
 
@@ -157,6 +168,7 @@ export default function CycleCalendar() {
     predicting,
     error,
     togglePeriodDay,
+    canMark,
   } = useCycleData();
 
   const [currentMonth, setCurrentMonth] = useState(new Date().getMonth());
@@ -346,6 +358,7 @@ export default function CycleCalendar() {
           handleToggleDay(today);
         }}
         isLoading={loading}
+        canMark={canMark}
       />
 
       {/* ========== CALENDRIER ========== */}
@@ -419,6 +432,7 @@ export default function CycleCalendar() {
                     key={`${wi}-${di}`}
                     day={day}
                     onToggle={() => handleToggleDay(formatDateStr(day.date))}
+                    canMark={canMark}
                   />
                 ))}
               </div>
@@ -496,12 +510,14 @@ function TodayCard({
   periodDays,
   onMarkToday,
   isLoading,
+  canMark,
 }: {
   prediction: PredictionResult | null;
   predicting: boolean;
   periodDays: Set<string>;
   onMarkToday: () => void;
   isLoading: boolean;
+  canMark: boolean;
 }) {
   const todayStr = formatDateStr(new Date());
   const isPeriodToday = periodDays.has(todayStr);
@@ -568,37 +584,53 @@ function TodayCard({
           </div>
         </div>
 
-        {/* Bouton marquer règles */}
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.9 }}
-          onClick={onMarkToday}
-          style={{
+        {canMark ? (
+          /* Bouton marquer règles — pour elle */
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={onMarkToday}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: `${spacing.sm}px ${spacing.md}px`,
+              borderRadius: borderRadius.pill,
+              border: `1.5px solid ${isPeriodToday ? PHASE_COLORS.period : colors.border}`,
+              backgroundColor: isPeriodToday ? `${PHASE_COLORS.period}15` : 'transparent',
+              cursor: 'pointer', fontFamily: 'inherit',
+              transition: 'all 0.2s',
+            }}
+          >
+            {isPeriodToday ? (
+              <>
+                <CheckIcon size={14} color={PHASE_COLORS.period} />
+                <span style={{ fontSize: 13, color: PHASE_COLORS.period, fontWeight: 600 }}>
+                  Marquée
+                </span>
+              </>
+            ) : (
+              <>
+                <PlusIcon size={14} color={colors.textSecondary} />
+                <span style={{ fontSize: 13, color: colors.textSecondary, fontWeight: 500 }}>
+                  Règles
+                </span>
+              </>
+            )}
+          </motion.button>
+        ) : (
+          /* Indicateur lecture seule — pour lui */
+          <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             padding: `${spacing.sm}px ${spacing.md}px`,
             borderRadius: borderRadius.pill,
-            border: `1.5px solid ${isPeriodToday ? PHASE_COLORS.period : colors.border}`,
-            backgroundColor: isPeriodToday ? `${PHASE_COLORS.period}15` : 'transparent',
-            cursor: 'pointer', fontFamily: 'inherit',
-            transition: 'all 0.2s',
-          }}
-        >
-          {isPeriodToday ? (
-            <>
-              <CheckIcon size={14} color={PHASE_COLORS.period} />
-              <span style={{ fontSize: 13, color: PHASE_COLORS.period, fontWeight: 600 }}>
-                Marquée
-              </span>
-            </>
-          ) : (
-            <>
-              <PlusIcon size={14} color={colors.textSecondary} />
-              <span style={{ fontSize: 13, color: colors.textSecondary, fontWeight: 500 }}>
-                Règles
-              </span>
-            </>
-          )}
-        </motion.button>
+            border: `1.5px solid ${colors.border}`,
+            backgroundColor: 'transparent',
+            opacity: 0.7,
+          }}>
+            <span style={{ fontSize: 13, color: colors.textSecondary, fontWeight: 500 }}>
+              👁 Suivi
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Prochain événement */}
@@ -661,9 +693,11 @@ function TodayCard({
 function DayCell({
   day,
   onToggle,
+  canMark,
 }: {
   day: CalendarDay;
   onToggle: () => void;
+  canMark: boolean;
 }) {
   const [tapping, setTapping] = useState(false);
 
@@ -679,6 +713,52 @@ function DayCell({
 
   const borderColor = day.isToday ? colors.accent : 'transparent';
 
+  if (!canMark) {
+    // Mode lecture seule — l'homme voit le calendrier mais ne peut pas marquer
+    return (
+      <motion.div
+        style={{
+          aspectRatio: '1',
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+          gap: 2,
+          borderRadius: borderRadius.md,
+          backgroundColor: bgColor,
+          border: `1.5px solid ${borderColor}`,
+          opacity: day.isCurrentMonth ? 1 : 0.3,
+          position: 'relative',
+          width: '100%',
+          userSelect: 'none',
+        }}
+      >
+        <span style={{
+          fontSize: day.isToday ? 15 : 13,
+          fontWeight: day.isToday ? 700 : 500,
+          color: day.isToday ? colors.primary : colors.text,
+          lineHeight: 1,
+        }}>
+          {day.day}
+        </span>
+
+        {hasPhase && day.isCurrentMonth && !isPeriodMarked && (
+          <div style={{
+            width: 6, height: 6, borderRadius: '50%',
+            backgroundColor: PHASE_COLORS[phase],
+          }} />
+        )}
+
+        {isPeriodMarked && (
+          <div style={{
+            width: 6, height: 6, borderRadius: '50%',
+            backgroundColor: PHASE_COLORS.period,
+            boxShadow: `0 0 4px ${PHASE_COLORS.period}66`,
+          }} />
+        )}
+      </motion.div>
+    );
+  }
+
+  // Mode interactif — la femme peut marquer ses règles
   return (
     <motion.button
       whileTap={{ scale: 0.85 }}
