@@ -185,32 +185,64 @@ export function useMessages(): UseMessagesReturn {
           if (eventType === 'INSERT') {
             const newMsg = payload.new as Message;
 
-            // Éviter les doublons
-            setMessages((prev) => {
-              if (prev.some((m) => m.id === newMsg.id)) return prev;
-              return prev;
-            });
+            // Récupérer les détails complets (avec retry si attachment manquant
+            // à cause de la race condition INSERT message → INSERT attachment)
+            async function fetchMessage(): Promise<MessageWithDetails | null> {
+              for (let attempt = 0; attempt < 3; attempt++) {
+                const { data: details } = await supabase
+                  .from('messages')
+                  .select(`
+                    *,
+                    sender:profiles!sender_id(id, display_name, avatar_url),
+                    attachments(*),
+                    statuses:message_status(*)
+                  `)
+                  .eq('id', newMsg.id)
+                  .single();
 
-            // Récupérer les détails complets
-            const { data: details } = await supabase
-              .from('messages')
-              .select(`
-                *,
-                sender:profiles!sender_id(id, display_name, avatar_url),
-                attachments(*),
-                statuses:message_status(*)
-              `)
-              .eq('id', newMsg.id)
-              .single();
+                if (!details) return null;
 
-            if (!details) return;
+                const full = details as unknown as MessageWithDetails;
 
-            const fullMsg = details as unknown as MessageWithDetails;
+                // Si le message attend un attachment (voice/image/video) mais
+                // n'en a pas encore → réessayer après 300ms
+                if (
+                  (full.type === 'voice' || full.type === 'image' || full.type === 'video') &&
+                  (!full.attachments || full.attachments.length === 0)
+                ) {
+                  await new Promise((r) => setTimeout(r, 300));
+                  continue;
+                }
+
+                return full;
+              }
+
+              // Dernier essai sans condition
+              const { data: details } = await supabase
+                .from('messages')
+                .select(`
+                  *,
+                  sender:profiles!sender_id(id, display_name, avatar_url),
+                  attachments(*),
+                  statuses:message_status(*)
+                `)
+                .eq('id', newMsg.id)
+                .single();
+              return details ? (details as unknown as MessageWithDetails) : null;
+            }
+
+            const fullMsg = await fetchMessage();
+            if (!fullMsg) return;
 
             setMessages((prev) => {
               if (prev.some((m) => m.id === fullMsg.id)) return prev;
               return [...prev, fullMsg];
             });
+
+            // Mettre à jour le timestamp du polling
+            if (fullMsg.created_at > (lastMsgTimestampRef.current || '')) {
+              lastMsgTimestampRef.current = fullMsg.created_at;
+            }
 
             // Mettre en cache le nouveau message pour les prochains montages
             addCachedMessage(fullMsg).catch(() => {});
@@ -343,10 +375,27 @@ export function useMessages(): UseMessagesReturn {
         const newMsgs = data as unknown as MessageWithDetails[];
 
         setMessages((prev) => {
-          const existing = new Set(prev.map((m) => m.id));
-          const toAdd = newMsgs.filter((m) => !existing.has(m.id));
-          if (toAdd.length === 0) return prev;
-          return [...prev, ...toAdd];
+          // Fusion : remplace les messages existants (pour récupérer les
+          // attachments qui ont pu manquer à cause de la race condition
+          // entre INSERT du message et INSERT de l'attachment)
+          const map = new Map(prev.map((m) => [m.id, m]));
+          let changed = false;
+          for (const msg of newMsgs) {
+            const existing = map.get(msg.id);
+            if (!existing) {
+              map.set(msg.id, msg);
+              changed = true;
+            } else if (
+              // Remplacer si l'existant n'a pas d'attachments mais que le
+              // nouveau en a (cas de la race condition Realtime)
+              (!existing.attachments || existing.attachments.length === 0) &&
+              msg.attachments && msg.attachments.length > 0
+            ) {
+              map.set(msg.id, msg);
+              changed = true;
+            }
+          }
+          return changed ? Array.from(map.values()) : prev;
         });
 
         // Mettre à jour le timestamp et le cache
@@ -483,10 +532,23 @@ export function useMessages(): UseMessagesReturn {
 
     // === Ajout optimiste au state local ===
     // Évite d'attendre Realtime (qui peut être lent ou déconnecté sur mobile)
+    // Inclut l'attachment pour que l'audio/photo soit jouable immédiatement
+    const optimisticAttachments: Attachment[] = attachmentData ? [{
+      id: msg.id, // id provisoire — sera remplacé par la donnée réelle
+      message_id: msg.id,
+      storage_path: attachmentData.storage_path,
+      mime_type: attachmentData.mime_type,
+      file_size: attachmentData.file_size ?? null,
+      duration_ms: attachmentData.duration_ms ?? null,
+      width: attachmentData.width ?? null,
+      height: attachmentData.height ?? null,
+      created_at: msg.created_at,
+    } as Attachment] : [];
+
     const optimisticMsg: MessageWithDetails = {
       ...msg,
       sender: { id: profileId, display_name: '', avatar_url: '' },
-      attachments: [],
+      attachments: optimisticAttachments,
       statuses: [{
         message_id: msg.id,
         profile_id: profileId,
