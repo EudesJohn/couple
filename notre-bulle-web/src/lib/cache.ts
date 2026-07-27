@@ -9,6 +9,33 @@ const DB_VERSION = 1;
 const PROFILE_CACHE_KEY = 'notre-bulle.profile';
 
 // ==========================================================
+// Staleness — le cache local doit céder la place aux
+// données fraîches de la base après 5 minutes
+// ==========================================================
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+const PROFILE_CACHE_TIMESTAMP_KEY = 'notre-bulle.profile_ts';
+
+function setProfileCacheTimestamp(): void {
+  try {
+    localStorage.setItem(PROFILE_CACHE_TIMESTAMP_KEY, Date.now().toString());
+  } catch { /* silencieux */ }
+}
+
+function getProfileCacheTimestamp(): number | null {
+  try {
+    const raw = localStorage.getItem(PROFILE_CACHE_TIMESTAMP_KEY);
+    return raw ? parseInt(raw, 10) : null;
+  } catch { return null; }
+}
+
+/** Vérifie si le cache profil est périmé et doit être re-fetché */
+export function isProfileCacheStale(): boolean {
+  const ts = getProfileCacheTimestamp();
+  if (!ts) return true; // pas de cache → considéré périmé
+  return Date.now() - ts > CACHE_DURATION_MS;
+}
+
+// ==========================================================
 // IndexedDB — Messages
 // ==========================================================
 
@@ -99,14 +126,41 @@ export async function addCachedMessage(msg: MessageWithDetails): Promise<void> {
   });
 }
 
+/** Remplace un message existant dans le cache (UPDATE Realtime) */
+export async function updateCachedMessage(msg: MessageWithDetails): Promise<void> {
+  const db = await getDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('messages', 'readwrite');
+    const store = tx.objectStore('messages');
+    const request = store.put(msg);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/** Supprime un message du cache (DELETE Realtime) */
+export async function removeCachedMessage(msgId: string): Promise<void> {
+  const db = await getDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('messages', 'readwrite');
+    const store = tx.objectStore('messages');
+    const request = store.delete(msgId);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
 // ==========================================================
 // localStorage — Profil
 // ==========================================================
 
-/** Stoque le profil auth dans localStorage */
+/** Stoque le profil auth dans localStorage + timestamp de fraîcheur */
 export function cacheProfile(profile: Profile): void {
   try {
     localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
+    setProfileCacheTimestamp();
   } catch {
     // localStorage plein ou désactivé — silencieux
   }
@@ -127,6 +181,7 @@ export function getCachedProfile(): Profile | null {
 export function clearProfileCache(): void {
   try {
     localStorage.removeItem(PROFILE_CACHE_KEY);
+    localStorage.removeItem(PROFILE_CACHE_TIMESTAMP_KEY);
   } catch {
     // silencieux
   }

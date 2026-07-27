@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../constants/config';
-import { cacheProfile, getCachedProfile, clearProfileCache } from './cache';
+import { cacheProfile, getCachedProfile, clearProfileCache, isProfileCacheStale } from './cache';
 import { getMyProfileId } from './profile';
 
 // ============================================================
@@ -90,28 +90,35 @@ function createChannelStub() {
 // ==========================================================
 
 export async function getCurrentProfile() {
-  // Cache localStorage d'abord
+  // Cache d'abord — retour immédiat si pas encore périmé
   const cached = getCachedProfile();
-  if (cached) return cached;
+  if (cached && !isProfileCacheStale()) return cached;
 
+  // Cache absent ou périmé → fetch Supabase
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
       const { data } = await supabase.from('profiles').select('*').eq('supabase_uid', user.id).maybeSingle();
-      if (data) cacheProfile(data);
-      return data;
+      if (data) {
+        cacheProfile(data);
+        return data;
+      }
     }
-  } catch { /* fallback silencieux */ }
+  } catch { /* fallback silencieux — on garde le cache même périmé */ }
 
   // Fallback : pas de session Auth Supabase → utiliser l'ID de la config
   // (l'app utilise le PIN localStorage, pas Supabase Auth)
   try {
     const profileId = getMyProfileId();
-    if (!profileId) return null;
+    if (!profileId) return cached;
     const { data } = await supabase.from('profiles').select('*').eq('id', profileId).maybeSingle();
-    if (data) cacheProfile(data);
-    return data;
-  } catch { return null; }
+    if (data) {
+      cacheProfile(data);
+      return data;
+    }
+  } catch { /* silencieux */ }
+
+  return cached; // retourne le cache périmé plutôt que rien
 }
 
 // Export de la fonction d'invalidation du cache profil

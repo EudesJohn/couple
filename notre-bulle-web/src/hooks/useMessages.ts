@@ -10,7 +10,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { uploadMedia, compressImage } from '../lib/media';
-import { cacheMessages, getCachedMessages, addCachedMessage } from '../lib/cache';
+import { cacheMessages, getCachedMessages, addCachedMessage, updateCachedMessage, removeCachedMessage } from '../lib/cache';
 import { getMyProfileId as getProfileId } from '../lib/profile';
 import { notifyNewMessage } from './useNotifications';
 import type { MessageWithDetails, Message, MessageType, Attachment, MessageStatus } from '../types/database';
@@ -164,65 +164,105 @@ export function useMessages(): UseMessagesReturn {
       .on(
         'postgres_changes',
         {
-          event: 'INSERT',
+          event: '*',
           schema: 'public',
           table: 'messages',
           filter: `conversation_id=eq.${convId}`,
         },
         async (payload: any) => {
-          const newMsg = payload.new as Message;
+          const eventType = payload.eventType as string;
 
-          // Éviter les doublons
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === newMsg.id)) return prev;
-            return prev;
-          });
+          // ── INSERT : nouveau message ──
+          if (eventType === 'INSERT') {
+            const newMsg = payload.new as Message;
 
-          // Récupérer les détails complets
-          const { data: details } = await supabase
-            .from('messages')
-            .select(`
-              *,
-              sender:profiles!sender_id(id, display_name, avatar_url),
-              attachments(*),
-              statuses:message_status(*)
-            `)
-            .eq('id', newMsg.id)
-            .single();
+            // Éviter les doublons
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === newMsg.id)) return prev;
+              return prev;
+            });
 
-          if (!details) return;
+            // Récupérer les détails complets
+            const { data: details } = await supabase
+              .from('messages')
+              .select(`
+                *,
+                sender:profiles!sender_id(id, display_name, avatar_url),
+                attachments(*),
+                statuses:message_status(*)
+              `)
+              .eq('id', newMsg.id)
+              .single();
 
-          const fullMsg = details as unknown as MessageWithDetails;
+            if (!details) return;
 
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === fullMsg.id)) return prev;
-            return [...prev, fullMsg];
-          });
+            const fullMsg = details as unknown as MessageWithDetails;
 
-          // Mettre en cache le nouveau message pour les prochains montages
-          addCachedMessage(fullMsg).catch(() => {});
+            setMessages((prev) => {
+              if (prev.some((m) => m.id === fullMsg.id)) return prev;
+              return [...prev, fullMsg];
+            });
 
-          // Notification si message du partenaire (sauf journaux d'appel)
-          const isOwn = fullMsg.sender_id === myProfileIdRef.current;
-          if (!isOwn && myProfileIdRef.current && fullMsg.type !== 'call') {
-            try {
-              await supabase.from('message_status').upsert({
-                message_id: fullMsg.id,
-                profile_id: myProfileIdRef.current,
-                status: 'delivered',
-              }, { onConflict: 'message_id,profile_id' });
+            // Mettre en cache le nouveau message pour les prochains montages
+            addCachedMessage(fullMsg).catch(() => {});
 
-              const senderName = fullMsg.sender?.display_name || 'Partenaire';
-              const content = fullMsg.type === 'text'
-                ? fullMsg.content
-                : fullMsg.type === 'image' ? 'Photo'
-                : fullMsg.type === 'voice' ? 'Message vocal'
-                : fullMsg.type === 'video' ? 'Vidéo'
-                : null;
-              await notifyNewMessage(senderName, content, convId);
-            } catch {
-              // Silencieux
+            // Notification si message du partenaire (sauf journaux d'appel)
+            const isOwn = fullMsg.sender_id === myProfileIdRef.current;
+            if (!isOwn && myProfileIdRef.current && fullMsg.type !== 'call') {
+              try {
+                await supabase.from('message_status').upsert({
+                  message_id: fullMsg.id,
+                  profile_id: myProfileIdRef.current,
+                  status: 'delivered',
+                }, { onConflict: 'message_id,profile_id' });
+
+                const senderName = fullMsg.sender?.display_name || 'Partenaire';
+                const content = fullMsg.type === 'text'
+                  ? fullMsg.content
+                  : fullMsg.type === 'image' ? 'Photo'
+                  : fullMsg.type === 'voice' ? 'Message vocal'
+                  : fullMsg.type === 'video' ? 'Vidéo'
+                  : null;
+                await notifyNewMessage(senderName, content, convId);
+              } catch {
+                // Silencieux
+              }
             }
+          }
+
+          // ── UPDATE : modification d'un message existant ──
+          if (eventType === 'UPDATE') {
+            const { data: details } = await supabase
+              .from('messages')
+              .select(`
+                *,
+                sender:profiles!sender_id(id, display_name, avatar_url),
+                attachments(*),
+                statuses:message_status(*)
+              `)
+              .eq('id', payload.new.id)
+              .single();
+
+            if (!details) return;
+
+            const fullMsg = details as unknown as MessageWithDetails;
+
+            setMessages((prev) =>
+              prev.map((m) => (m.id === fullMsg.id ? fullMsg : m))
+            );
+
+            // Synchroniser le cache
+            updateCachedMessage(fullMsg).catch(() => {});
+          }
+
+          // ── DELETE : suppression d'un message ──
+          if (eventType === 'DELETE') {
+            const deletedId = payload.old.id as string;
+
+            setMessages((prev) => prev.filter((m) => m.id !== deletedId));
+
+            // Nettoyer le cache
+            removeCachedMessage(deletedId).catch(() => {});
           }
         }
       )
