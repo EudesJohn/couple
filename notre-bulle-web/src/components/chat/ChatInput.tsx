@@ -168,7 +168,8 @@ export function ChatInput({
           backgroundColor: colors.surfaceAlt,
           borderRadius: borderRadius.lg,
           padding: `${spacing.sm}px ${spacing.md}px`,
-          maxHeight: 100,
+          maxHeight: 144,
+          overflow: 'hidden',
         }}>
           <textarea
             ref={textareaRef}
