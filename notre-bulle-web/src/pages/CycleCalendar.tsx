@@ -12,9 +12,9 @@ import {
 } from '../components/Icons';
 import { supabase } from '../lib/supabase';
 import { getMyProfileId } from '../lib/profile';
-import type { Profile } from '../types/database';
 import {
   getCycleEntries,
+  getCycleEntriesByProfileIds,
   saveCycleEntry,
   deleteCycleEntry,
   fetchPredictions,
@@ -42,7 +42,6 @@ const DAYS_FR = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
 
 function useCycleData() {
   const [profileId, setProfileId] = useState<string | null>(null);
-  const [partnerProfile, setPartnerProfile] = useState<Profile | null>(null);
   const [entries, setEntries] = useState<CycleEntry[]>([]);
   const [prediction, setPrediction] = useState<PredictionResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -65,25 +64,21 @@ function useCycleData() {
 
     const load = async () => {
       try {
-        // Charger les entrées de l'utilisatrice
-        const myEntries = await getCycleEntries(profileId);
-
-        // Trouver le partenaire (l'autre membre de la conversation)
+        // Trouver tous les membres de la conversation
         const { data: convMembers } = await supabase
           .from('conversation_members')
           .select('profile_id');
 
-        const partnerId = convMembers?.find((m: any) => m.profile_id !== profileId)?.profile_id;
-        if (partnerId) {
-          const { data: partnerData } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', partnerId)
-            .single();
-          if (partnerData) setPartnerProfile(partnerData as Profile);
-        }
+        const allProfileIds: string[] = convMembers
+          ?.map((m: any) => m.profile_id)
+          .filter(Boolean) ?? [];
 
-        setEntries(myEntries);
+        // Charger les entrées de TOUS les membres (calendrier partagé)
+        const allEntries = allProfileIds.length > 0
+          ? await getCycleEntriesByProfileIds(allProfileIds)
+          : await getCycleEntries(profileId);
+
+        setEntries(allEntries);
       } catch (err: any) {
         console.warn('Erreur chargement données cycle:', err);
         setError(err.message);
@@ -142,7 +137,6 @@ function useCycleData() {
 
   return {
     profileId,
-    partnerProfile,
     entries,
     prediction,
     loading,
@@ -157,7 +151,6 @@ function useCycleData() {
 export default function CycleCalendar() {
   const {
     profileId,
-    partnerProfile,
     entries,
     prediction,
     loading,
@@ -169,6 +162,28 @@ export default function CycleCalendar() {
   const [currentMonth, setCurrentMonth] = useState(new Date().getMonth());
   const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
   const [animDir, setAnimDir] = useState<'left' | 'right'>('left');
+  const [toast, setToast] = useState<{message: string; type: 'success' | 'error'} | null>(null);
+
+  // Wrapper avec feedback utilisateur
+  const handleToggleDay = useCallback(async (dateStr: string) => {
+    const isCurrentlyMarked = entries.some(
+      (e) => e.event_date === dateStr && e.event_type === 'period'
+    );
+    const ok = await togglePeriodDay(dateStr);
+    if (!ok) {
+      setToast({
+        message: 'Impossible d\'enregistrer. Vérifiez que la migration SQL a été exécutée dans Supabase.',
+        type: 'error',
+      });
+      setTimeout(() => setToast(null), 5000);
+    } else {
+      setToast({
+        message: isCurrentlyMarked ? 'Jour retiré' : 'Jour marqué ✓',
+        type: 'success',
+      });
+      setTimeout(() => setToast(null), 2000);
+    }
+  }, [togglePeriodDay, entries]);
 
   const goPrevMonth = useCallback(() => {
     setAnimDir('right');
@@ -236,8 +251,7 @@ export default function CycleCalendar() {
     [currentYear, currentMonth, phaseMap, markedPeriods]
   );
 
-  // Noms des partenaires pour le titre
-  const myName = 'Ma chérie'; // Sera personnalisé plus tard
+  // Aucun nom affiché — calendrier partagé
 
   // ========== États d'écran ==========
 
@@ -317,7 +331,7 @@ export default function CycleCalendar() {
             Notre Calendrier
           </h1>
           <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.65)' }}>
-            {partnerProfile?.display_name || 'Partenaire'} &middot; Suivi de cycle
+            Suivi de cycle partagé
           </p>
         </div>
       </div>
@@ -329,7 +343,7 @@ export default function CycleCalendar() {
         periodDays={markedPeriods}
         onMarkToday={() => {
           const today = formatDateStr(new Date());
-          togglePeriodDay(today);
+          handleToggleDay(today);
         }}
         isLoading={loading}
       />
@@ -404,7 +418,7 @@ export default function CycleCalendar() {
                   <DayCell
                     key={`${wi}-${di}`}
                     day={day}
-                    onToggle={() => togglePeriodDay(formatDateStr(day.date))}
+                    onToggle={() => handleToggleDay(formatDateStr(day.date))}
                   />
                 ))}
               </div>
@@ -440,6 +454,36 @@ export default function CycleCalendar() {
         {/* Espace pour le bouton flottant */}
         <div style={{ height: 80 }} />
       </div>
+
+      {/* ========== TOAST ========== */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            transition={{ duration: 0.25 }}
+            style={{
+              position: 'fixed',
+              bottom: `calc(24px + env(safe-area-inset-bottom, 0px))`,
+              left: 24,
+              right: 24,
+              maxWidth: 400,
+              margin: '0 auto',
+              padding: `${spacing.md}px ${spacing.lg}px`,
+              backgroundColor: toast.type === 'error' ? '#DC2626' : colors.primary,
+              borderRadius: borderRadius.lg,
+              boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+              zIndex: 100,
+              textAlign: 'center',
+            }}
+          >
+            <span style={{ fontSize: 14, fontWeight: 500, color: '#FAFAF9' }}>
+              {toast.message}
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -638,7 +682,7 @@ function DayCell({
   return (
     <motion.button
       whileTap={{ scale: 0.85 }}
-      onTap={() => {
+      onClick={() => {
         setTapping(true);
         setTimeout(() => setTapping(false), 150);
         onToggle();
