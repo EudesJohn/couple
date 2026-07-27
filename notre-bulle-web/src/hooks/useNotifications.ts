@@ -66,7 +66,7 @@ async function registerPushSubscription(): Promise<boolean> {
 
     subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey,
+      applicationServerKey: applicationServerKey as any,
     });
 
     // Envoyer l'abonnement au backend
