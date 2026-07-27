@@ -1,9 +1,11 @@
 # ============================================================
-# Cycle Tracker — API Vercel Serverless (FastAPI + prédictions)
+# Cycle Tracker + Push Notifications — API Vercel Serverless
 # Notre Bulle
 # ============================================================
 import uuid
 import os
+import json
+import logging
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from statistics import median, stdev
@@ -11,6 +13,7 @@ from statistics import median, stdev
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import httpx
 
 # ============================================================
 # PRÉDICTEUR DE CYCLE (intégré — pas d'import entre fichiers)
@@ -275,10 +278,120 @@ def predict_full(entries: List[Dict], period_length: int = DEFAULT_PERIOD_LENGTH
 # FASTAPI APP
 # ============================================================
 
-app = FastAPI(title="Notre Bulle — Cycle Tracker API", version="1.0.0")
+app = FastAPI(title="Notre Bulle — API", version="1.1.0")
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+logger = logging.getLogger("notre-bulle-api")
+
+# ============================================================
+# SUPABASE CLIENT (via REST API — pas de dépendance supabase-py)
+# ============================================================
+
+SUPABASE_URL = os.environ.get("VITE_SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.environ.get("VITE_SUPABASE_ANON_KEY", "")
+VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
+VAPID_CLAIM_EMAIL = os.environ.get("VAPID_CLAIM_EMAIL", "admin@notre-bulle.app")
+
+
+def get_supabase_headers() -> Dict[str, str]:
+    return {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+
+
+async def store_subscription(profile_id: str, endpoint: str, p256dh_key: str, auth_key: str) -> bool:
+    """Stoque un abonnement push dans Supabase."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        logger.warning("Supabase non configuré — subscription non persistée")
+        return False
+
+    url = f"{SUPABASE_URL}/rest/v1/push_subscriptions"
+    headers = get_supabase_headers()
+
+    # Upsert : si le même endpoint existe déjà pour ce profile, on le met à jour
+    data = {
+        "profile_id": profile_id,
+        "endpoint": endpoint,
+        "p256dh_key": p256dh_key,
+        "auth_key": auth_key,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    async with httpx.AsyncClient() as client:
+        # Vérifier si une subscription existe déjà pour ce profile + endpoint
+        check_url = f"{url}?profile_id=eq.{profile_id}&endpoint=eq.{httpx.utils.quote(endpoint, safe='')}"
+        check_resp = await client.get(check_url, headers=headers)
+
+        if check_resp.status_code == 200 and check_resp.json():
+            # Mise à jour
+            patch_resp = await client.patch(
+                f"{url}?profile_id=eq.{profile_id}&endpoint=eq.{httpx.utils.quote(endpoint, safe='')}",
+                headers=headers,
+                json=data,
+            )
+            return patch_resp.status_code in (200, 204)
+        else:
+            # Création
+            data["id"] = str(uuid.uuid4())
+            data["created_at"] = datetime.utcnow().isoformat()
+            post_resp = await client.post(url, headers=headers, json=data)
+            return post_resp.status_code in (200, 201, 204)
+
+
+async def get_subscriptions(profile_id: str) -> List[Dict]:
+    """Récupère tous les abonnements push d'un profil."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return []
+
+    url = f"{SUPABASE_URL}/rest/v1/push_subscriptions?profile_id=eq.{profile_id}&select=endpoint,p256dh_key,auth_key"
+    headers = get_supabase_headers()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            return resp.json()
+        return []
+
+
+async def delete_subscription(profile_id: str, endpoint: str) -> bool:
+    """Supprime un abonnement push."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return False
+
+    url = f"{SUPABASE_URL}/rest/v1/push_subscriptions?profile_id=eq.{profile_id}&endpoint=eq.{httpx.utils.quote(endpoint, safe='')}"
+    headers = get_supabase_headers()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(url, headers=headers)
+        return resp.status_code in (200, 204)
+
+
+# ============================================================
+# MODÈLES PUSH
+# ============================================================
+
+class PushSubscribeIn(BaseModel):
+    profile_id: str
+    endpoint: str
+    p256dh_key: str
+    auth_key: str
+
+
+class PushNotifyIn(BaseModel):
+    recipient_profile_id: str
+    title: str
+    body: str
+    data: Optional[Dict[str, Any]] = None
+
+
+# ============================================================
+# MODÈLES CYCLE (existants)
+# ============================================================
 
 class CycleEntryIn(BaseModel):
     profile_id: str
@@ -296,10 +409,19 @@ class PredictionRequest(BaseModel):
 _db: List[Dict[str, Any]] = []
 
 
+# ============================================================
+# ENDPOINTS
+# ============================================================
+
 @app.get("/")
 @app.get("/api/health")
 def health():
-    return {"status": "healthy", "service": "Cycle Tracker — Notre Bulle", "timestamp": datetime.utcnow().isoformat()}
+    return {
+        "status": "healthy",
+        "service": "Notre Bulle — API",
+        "version": "1.1.0",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
 
 
 @app.post("/api/predict")
@@ -324,3 +446,111 @@ def seed_demo():
             })
             count += 1
     return {"status": "seeded", "count": count, "profile_id": demo_profile}
+
+
+# ============================================================
+# PUSH NOTIFICATION ENDPOINTS
+# ============================================================
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(request: PushSubscribeIn):
+    """
+    Enregistre un abonnement push pour un profil.
+    Appelé par le navigateur après avoir souscrit via PushManager.subscribe().
+    """
+    if not request.profile_id or not request.endpoint:
+        raise HTTPException(status_code=400, detail="profile_id et endpoint requis")
+
+    ok = await store_subscription(
+        profile_id=request.profile_id,
+        endpoint=request.endpoint,
+        p256dh_key=request.p256dh_key,
+        auth_key=request.auth_key,
+    )
+
+    if ok:
+        return {"status": "ok", "message": "Subscription enregistrée"}
+    else:
+        # Même si Supabase n'est pas dispo, l'abonnement est actif côté navigateur
+        # Il sera réutilisé au prochain envoi
+        logger.warning("Subscription non persistée (Supabase non configuré ou erreur)")
+        return {"status": "ok", "message": "Subscription locale (non persistée)"}
+
+
+@app.post("/api/push/notify")
+async def push_notify(request: PushNotifyIn):
+    """
+    Envoie une notification push au partenaire.
+    Récupère tous les abonnements push du destinataire et envoie
+    la notification à chacun via Web Push Protocol.
+    """
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+        logger.error("VAPID keys non configurées — push impossible")
+        raise HTTPException(status_code=500, detail="VAPID keys non configurées sur le serveur")
+
+    # Récupérer les abonnements du destinataire
+    subscriptions = await get_subscriptions(request.recipient_profile_id)
+
+    if not subscriptions:
+        logger.info(f"Aucune subscription push pour {request.recipient_profile_id}")
+        return {"status": "ok", "sent": 0, "total": 0}
+
+    # Payload à envoyer
+    payload = {
+        "title": request.title,
+        "body": request.body,
+        "data": request.data or {},
+        "tag": "notre-bulle",
+    }
+    payload_bytes = json.dumps(payload).encode("utf-8")
+
+    sent_count = 0
+    errors = []
+
+    for sub in subscriptions:
+        try:
+            await _send_single_push(
+                endpoint=sub["endpoint"],
+                p256dh_key=sub["p256dh_key"],
+                auth_key=sub["auth_key"],
+                payload_bytes=payload_bytes,
+            )
+            sent_count += 1
+        except Exception as e:
+            errors.append(str(e))
+            logger.error(f"Erreur envoi push à {sub['endpoint'][:50]}...: {e}")
+
+    return {
+        "status": "ok",
+        "sent": sent_count,
+        "total": len(subscriptions),
+        "errors": errors if errors else None,
+    }
+
+
+async def _send_single_push(
+    endpoint: str,
+    p256dh_key: str,
+    auth_key: str,
+    payload_bytes: bytes,
+):
+    """
+    Envoie une notification push via Web Push Protocol avec pywebpush.
+    """
+    from pywebpush import webpush
+
+    webpush(
+        subscription_info={
+            "endpoint": endpoint,
+            "keys": {
+                "p256dh": p256dh_key,
+                "auth": auth_key,
+            },
+        },
+        data=payload_bytes,
+        vapid_private_key=VAPID_PRIVATE_KEY,
+        vapid_claims={
+            "sub": f"mailto:{VAPID_CLAIM_EMAIL}",
+        },
+        content_encoding="aes128gcm",
+    )

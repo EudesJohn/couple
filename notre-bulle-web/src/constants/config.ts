@@ -11,6 +11,7 @@ export const config = {
   },
   myProfileId: env.VITE_MY_PROFILE_ID ?? '',
   partnerProfileId: env.VITE_PARTNER_PROFILE_ID ?? '',
+  vapidPublicKey: env.VITE_VAPID_PUBLIC_KEY ?? '',
   zego: {
     appID: Number(env.VITE_ZEGO_APP_ID ?? 0),
     appSign: env.VITE_ZEGO_APP_SIGN ?? '',
