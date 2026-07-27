@@ -24,3 +24,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_cycle_entries_unique_day
 -- pas Supabase Auth. auth.uid() ne correspond à aucun profil.
 -- La sécurité est gérée au niveau applicatif via le PIN.
 ALTER TABLE cycle_entries DISABLE ROW LEVEL SECURITY;
+
+-- ============================================================
+-- Même chose pour profiles : le template Supabase par défaut a RLS
+-- activé avec UPDATE USING (auth.uid() = id), ce qui bloque
+-- silencieusement les mises à jour (0 lignes affectées, pas d'erreur).
+-- ============================================================
+ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;
