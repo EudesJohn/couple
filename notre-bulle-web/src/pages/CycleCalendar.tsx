@@ -2,7 +2,7 @@
 // 📅 Cycle Tracker — Calendrier menstruel partagé
 // Design premium Burgundy & Gold, animations Framer Motion
 // ============================================================
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { colors, spacing, borderRadius, fonts } from '../constants/theme';
 import {
@@ -47,6 +47,11 @@ function useCycleData() {
   const [loading, setLoading] = useState(true);
   const [predicting, setPredicting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Réf pour éviter les closures obsolètes (race condition clic rapide → 409)
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const processingRef = useRef<Set<string>>(new Set());
 
   // Charger le profil
   useEffect(() => {
@@ -102,44 +107,52 @@ function useCycleData() {
   const togglePeriodDay = useCallback(async (dateStr: string) => {
     if (!profileId) return false;
 
-    // Vérifier si déjà marqué
-    const existing = entries.find(
-      (e) => e.event_date === dateStr && e.event_type === 'period'
-    );
+    // Verrouillage anti-doublon : ignorer si déjà en cours
+    if (processingRef.current.has(dateStr)) return true;
+    processingRef.current.add(dateStr);
 
-    if (existing) {
-      const ok = await deleteCycleEntry(profileId, dateStr, 'period');
-      if (ok) {
-        setEntries((prev) =>
-          prev.filter((e) => !(e.event_date === dateStr && e.event_type === 'period'))
-        );
-      }
-      return ok;
-    } else {
-      const ok = await saveCycleEntry({
-        profile_id: profileId,
-        event_date: dateStr,
-        event_type: 'period',
-      });
-      if (ok) {
-        setEntries((prev) => {
-          // Éviter les doublons (race condition si clic rapide)
-          if (prev.some((e) => e.event_date === dateStr && e.event_type === 'period')) {
-            return prev;
-          }
-          const newEntry: CycleEntry = {
-            id: crypto.randomUUID(),
-            profile_id: profileId!,
-            event_date: dateStr,
-            event_type: 'period',
-            created_at: new Date().toISOString(),
-          };
-          return [...prev, newEntry];
+    try {
+      // Utiliser le ref pour avoir la donnée la plus récente (pas la closure)
+      const existing = entriesRef.current.find(
+        (e) => e.event_date === dateStr && e.event_type === 'period'
+      );
+
+      if (existing) {
+        const ok = await deleteCycleEntry(profileId, dateStr, 'period');
+        if (ok) {
+          setEntries((prev) =>
+            prev.filter((e) => !(e.event_date === dateStr && e.event_type === 'period'))
+          );
+        }
+        return ok;
+      } else {
+        const ok = await saveCycleEntry({
+          profile_id: profileId,
+          event_date: dateStr,
+          event_type: 'period',
         });
+        if (ok) {
+          setEntries((prev) => {
+            // Vérifier dans le state le plus récent (évite doublons entre ref et setEntries)
+            if (prev.some((e) => e.event_date === dateStr && e.event_type === 'period')) {
+              return prev;
+            }
+            const newEntry: CycleEntry = {
+              id: crypto.randomUUID(),
+              profile_id: profileId!,
+              event_date: dateStr,
+              event_type: 'period',
+              created_at: new Date().toISOString(),
+            };
+            return [...prev, newEntry];
+          });
+        }
+        return ok;
       }
-      return ok;
+    } finally {
+      processingRef.current.delete(dateStr);
     }
-  }, [profileId, entries]);
+  }, [profileId]); // plus de dépendance entries → plus de closure obsolète
 
   // Seule celle qui a des entrées "period" peut marquer (ou tout le monde si première utilisation)
   const canMark = useMemo(() => {
