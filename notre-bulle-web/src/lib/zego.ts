@@ -46,10 +46,18 @@ class WebRTCManager {
   private localStreamPromise: Promise<void> | null = null;
   private resolveLocalStream: (() => void) | null = null;
 
+  // Callback appelé immédiatement quand le flux distant change
+  // (évite le polling 500ms dans CallScreen qui cause des sauts)
+  private onRemoteStreamReady: ((stream: MediaStream) => void) | null = null;
+
   private iceServers: RTCIceServer[] = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
   ];
+
+  setOnRemoteStreamReady(cb: ((stream: MediaStream) => void) | null): void {
+    this.onRemoteStreamReady = cb;
+  }
 
   async joinRoom(roomID: string, user: CallUser): Promise<void> {
     // Idempotent : si déjà dans cette room, ne pas recréer le PC
@@ -61,6 +69,9 @@ class WebRTCManager {
     this.callId = roomID;
 
     this.pc = new RTCPeerConnection({ iceServers: this.iceServers });
+
+    // Forcer H264 (encodage matériel sur mobile) pour réduire les sauts d'image
+    this.preferH264Codec();
 
     this.pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -78,6 +89,12 @@ class WebRTCManager {
 
       const streamId = event.streams[0]?.id || 'remote';
       this.remoteStreamId = streamId;
+
+      // Callback immédiat pour que CallScreen attache le flux sans délai
+      if (this.remoteStream && this.onRemoteStreamReady) {
+        this.onRemoteStreamReady(this.remoteStream);
+      }
+
       onRemoteStreamUpdate?.([{ streamID: streamId }], true);
     };
 
@@ -112,11 +129,14 @@ class WebRTCManager {
 
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
         video: video ? {
-          width: { ideal: 640, max: 1280 },
-          height: { ideal: 480, max: 720 },
-          frameRate: { ideal: 24 },
+          width: { ideal: 480, max: 640 },
+          height: { ideal: 288, max: 480 },
+          frameRate: { ideal: 20, max: 24 },
         } : false,
       });
 
@@ -221,7 +241,8 @@ class WebRTCManager {
     });
   }
 
-  // Limite le débit vidéo pour éviter les sauts d'image sur connexion mobile
+  // Limite le débit vidéo et configure l'adaptation réseau pour éviter
+  // les sauts d'image sur connexion mobile.
   private async limitVideoBitrate(): Promise<void> {
     if (!this.pc) return;
     const senders = this.pc.getSenders();
@@ -230,13 +251,36 @@ class WebRTCManager {
         try {
           const params = sender.getParameters();
           if (!params.encodings) params.encodings = [{}];
-          // 500 kbps max — suffisant pour 480p fluide sans saturer le réseau
-          params.encodings[0].maxBitrate = 500_000;
+          // 300 kbps max — suffisant pour 360p fluide sans saturer le réseau mobile
+          params.encodings[0].maxBitrate = 300_000;
+          // Prioriser le maintien du framerate : baisse la qualité avant de réduire les fps
+          (params.encodings[0] as any).degradationPreference = 'maintain-framerate';
           await sender.setParameters(params).catch(() => {});
         } catch {
           // Silencieux si non supporté par le navigateur
         }
       }
+    }
+  }
+
+  // Forcer H264 (broadcom/qualcomm hardware encode) — bien plus fluide sur mobile
+  // que VP8/VP9 qui sont encodés en software sur la plupart des appareils iOS/Android
+  private preferH264Codec(): void {
+    if (!this.pc || !this.pc.getTransceivers) return;
+    try {
+      const caps = RTCRtpSender.getCapabilities('video');
+      if (!caps?.codecs) return;
+      // Trier les codecs : H264 en premier, le reste ensuite
+      const h264 = caps.codecs.filter(c => c.mimeType.toLowerCase().includes('h264'));
+      const other = caps.codecs.filter(c => !c.mimeType.toLowerCase().includes('h264'));
+      const preferred = [...h264, ...other];
+      for (const tr of this.pc.getTransceivers()) {
+        if (tr.receiver?.track?.kind === 'video' && tr.setCodecPreferences) {
+          tr.setCodecPreferences(preferred);
+        }
+      }
+    } catch {
+      // Silencieux si setCodecPreferences non supporté
     }
   }
 
@@ -326,6 +370,10 @@ export function setRemoteView(view: any | undefined): void {
 
 export function setOnRemoteStreamUpdate(cb: ((streams: any[], added: boolean) => void) | null): void {
   onRemoteStreamUpdate = cb;
+}
+
+export function setOnRemoteStreamReady(cb: ((stream: MediaStream) => void) | null): void {
+  getWebRTC().setOnRemoteStreamReady(cb);
 }
 
 export async function joinRoom(roomID: string, user: CallUser): Promise<void> {

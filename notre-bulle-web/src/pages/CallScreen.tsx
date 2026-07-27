@@ -5,7 +5,7 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getWebRTCStreams } from '../lib/zego';
+import { getWebRTCStreams, setOnRemoteStreamReady } from '../lib/zego';
 import { colors, borderRadius } from '../constants/theme';
 import { useCall } from '../hooks/useCall';
 import {
@@ -150,26 +150,53 @@ export default function CallScreen() {
 
   const [webRTCStreams, setWebRTCStreams] = useState<{ local: MediaStream | null; remote: MediaStream | null }>({ local: null, remote: null });
 
-  // Ref pour éviter la stale closure dans l'interval
-  const streamsRef = useRef(webRTCStreams);
-  streamsRef.current = webRTCStreams;
-
-  // Web: attacher les flux aux éléments <video>/<audio>
+  // Web: callback immédiat quand le flux distant arrive (évite le polling 500ms
+  // qui cause des sauts d'image sur mobile — le flux est attaché dès l'événement ontrack)
   useEffect(() => {
+    setOnRemoteStreamReady((stream) => {
+      // Attacher immédiatement le flux à l'élément DOM
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== stream) {
+        remoteVideoRef.current.srcObject = stream;
+      }
+      // Mettre à jour l'état React pour le rendu
+      setWebRTCStreams((prev) => {
+        if (prev.remote === stream) return prev;
+        return { ...prev, remote: stream };
+      });
+    });
+    return () => setOnRemoteStreamReady(null);
+  }, []);
+
+  // Web: fallback polling basse fréquence pour le cas où le flux existe déjà
+  // au moment du montage du composant (rate limiter évite les reassignations intempestives)
+  useEffect(() => {
+    let lastLocal: MediaStream | null = null;
+    let lastRemote: MediaStream | null = null;
+    let idleTicks = 0;
+
     const interval = setInterval(() => {
       const streams = getWebRTCStreams();
-      const cur = streamsRef.current;
-      if (streams.local !== cur.local || streams.remote !== cur.remote) {
-        setWebRTCStreams({ local: streams.local, remote: streams.remote });
+
+      // Rattrapage si le flux distant n'a pas encore été attaché par le callback
+      if (remoteVideoRef.current && streams.remote && remoteVideoRef.current.srcObject !== streams.remote) {
+        remoteVideoRef.current.srcObject = streams.remote;
       }
-      // Mise à jour directe de srcObject pour éviter les problèmes de timing
-      // quand l'élément se monte après que le flux est déjà disponible.
-      // Ne réaffecte que si la référence a changé pour éviter un reset du rendu.
-      if (localVideoRef.current && localVideoRef.current.srcObject !== streams.local) {
+      if (localVideoRef.current && streams.local && localVideoRef.current.srcObject !== streams.local) {
         localVideoRef.current.srcObject = streams.local;
       }
-      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== streams.remote) {
-        remoteVideoRef.current.srcObject = streams.remote;
+
+      // Mise à jour de l'état React seulement si changement effectif
+      if (streams.local !== lastLocal || streams.remote !== lastRemote) {
+        lastLocal = streams.local;
+        lastRemote = streams.remote;
+        setWebRTCStreams({ local: streams.local, remote: streams.remote });
+        idleTicks = 0;
+      } else {
+        idleTicks++;
+        // Arrêter le polling après 30 ticks sans changement (30s)
+        if (idleTicks > 60) {
+          clearInterval(interval);
+        }
       }
     }, 500);
     return () => clearInterval(interval);
