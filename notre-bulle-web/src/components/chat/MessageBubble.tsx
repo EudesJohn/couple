@@ -239,65 +239,7 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
         borderBottomLeftRadius: !isOwn ? borderRadius.sm : borderRadius.lg,
         border: !isOwn ? `1px solid ${colors.borderLight}` : undefined,
         boxShadow: `0 2px 6px ${isOwn ? colors.glowBurgundy : colors.shadow}`,
-        position: 'relative',
       }}>
-        {/* Overlay de suppression */}
-        {showDeleteMenu && isOwn && (
-          <div style={{
-            position: 'absolute', inset: 0,
-            borderRadius: borderRadius.lg,
-            borderBottomRightRadius: isOwn ? borderRadius.sm : borderRadius.lg,
-            borderBottomLeftRadius: !isOwn ? borderRadius.sm : borderRadius.lg,
-            backgroundColor: 'rgba(0,0,0,0.6)',
-            display: 'flex', justifyContent: 'center', alignItems: 'center',
-            zIndex: 5,
-          }}>
-            {confirmDelete ? (
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                <span style={{ color: '#FAFAF9', fontSize: 13, fontWeight: 500 }}>
-                  Supprimer ?
-                </span>
-                <button
-                  onClick={handleDelete}
-                  style={{
-                    backgroundColor: colors.error,
-                    color: '#FAFAF9', border: 'none',
-                    borderRadius: borderRadius.sm, padding: '8px 16px',
-                    fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
-                  }}
-                >
-                  Oui
-                </button>
-                <button
-                  onClick={() => { setShowDeleteMenu(false); setConfirmDelete(false); }}
-                  style={{
-                    backgroundColor: 'rgba(255,255,255,0.2)',
-                    color: '#FAFAF9', border: 'none',
-                    borderRadius: borderRadius.sm, padding: '8px 16px',
-                    fontSize: 13, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit',
-                  }}
-                >
-                  Annuler
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setConfirmDelete(true)}
-                style={{
-                  backgroundColor: 'transparent', border: 'none',
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-                  fontFamily: 'inherit',
-                }}
-              >
-                <TrashIcon size={18} color={colors.error} />
-                <span style={{ color: colors.error, fontSize: 14, fontWeight: 600 }}>
-                  Supprimer
-                </span>
-              </button>
-            )}
-          </div>
-        )}
-
         {/* Quoted message (reply) */}
         {hasReply && message.reply_to_message && (
           <QuotedMessage replyTo={message.reply_to_message} isOwn={isOwn} />
@@ -397,12 +339,87 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
         style={{
           display: 'flex',
           justifyContent: isOwn ? 'flex-end' : 'flex-start',
-          marginBottom: spacing.sm,
+          marginBottom: showDeleteMenu && isOwn && onDelete ? spacing.xs : spacing.sm,
           padding: `0 ${spacing.lg}px`,
         }}
       >
         {bubbleContent}
       </motion.div>
+
+      {/* ─── Barre de suppression (élégante, en dessous de la bulle) ─── */}
+      {showDeleteMenu && isOwn && onDelete && (
+        <motion.div
+          initial={{ opacity: 0, y: -6, height: 0 }}
+          animate={{ opacity: 1, y: 0, height: 'auto' }}
+          exit={{ opacity: 0, height: 0 }}
+          transition={{ duration: 0.2, ease: 'easeOut' }}
+          style={{
+            display: 'flex',
+            justifyContent: isOwn ? 'flex-end' : 'flex-start',
+            padding: `0 ${spacing.lg}px`,
+            marginBottom: spacing.sm,
+            overflow: 'hidden',
+          }}
+        >
+          {confirmDelete ? (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              backgroundColor: `${colors.error}12`,
+              border: `1px solid ${colors.error}30`,
+              borderRadius: borderRadius.lg,
+              padding: `${spacing.sm}px ${spacing.md}px`,
+            }}>
+              <span style={{
+                fontSize: 13, color: colors.error, fontWeight: 500,
+                fontFamily: 'inherit',
+              }}>
+                Supprimer ?
+              </span>
+              <button
+                onClick={handleDelete}
+                style={{
+                  backgroundColor: colors.error, color: '#FAFAF9', border: 'none',
+                  borderRadius: borderRadius.sm, padding: '4px 12px',
+                  fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                  letterSpacing: 0.3,
+                }}
+              >
+                Oui
+              </button>
+              <button
+                onClick={() => { setShowDeleteMenu(false); setConfirmDelete(false); }}
+                style={{
+                  backgroundColor: 'transparent', color: colors.textSecondary,
+                  border: `1px solid ${colors.border}`,
+                  borderRadius: borderRadius.sm, padding: '4px 12px',
+                  fontSize: 12, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                Annuler
+              </button>
+            </div>
+          ) : (
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.92 }}
+              onClick={() => setConfirmDelete(true)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                backgroundColor: `${colors.error}10`,
+                border: `1px solid ${colors.error}25`,
+                borderRadius: borderRadius.md,
+                padding: `${spacing.xs}px ${spacing.md}px`,
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              <TrashIcon size={14} color={colors.error} />
+              <span style={{ fontSize: 13, color: colors.error, fontWeight: 600 }}>
+                Supprimer
+              </span>
+            </motion.button>
+          )}
+        </motion.div>
+      )}
     </div>
   );
 }
