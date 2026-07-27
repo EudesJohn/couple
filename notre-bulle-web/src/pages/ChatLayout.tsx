@@ -12,7 +12,7 @@ import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
 import { getPartnerProfileId } from '../lib/profile';
 import { downloadMedia } from '../lib/media';
-import { PhoneIcon, VideoIcon, SettingsIcon, HeartFilledIcon } from '../components/Icons';
+import { PhoneIcon, VideoIcon, SettingsIcon, HeartFilledIcon, CycleIcon } from '../components/Icons';
 import { CallTypeSheet } from '../components/call/CallTypeSheet';
 import { IncomingCallBanner } from '../components/call/IncomingCallBanner';
 
@@ -134,6 +134,18 @@ export default function ChatLayout() {
 
         {/* Actions */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <motion.button
+            whileTap={{ scale: 0.9 }}
+            onClick={() => navigate('/cycle')}
+            style={{
+              width: 38, height: 38, borderRadius: 19,
+              backgroundColor: colors.surfaceAlt, border: 'none', cursor: 'pointer',
+              display: 'flex', justifyContent: 'center', alignItems: 'center',
+            }}
+          >
+            <CycleIcon size={18} color={colors.secondary} />
+          </motion.button>
+
           <motion.button
             whileTap={{ scale: 0.9 }}
             onClick={() => navigate('/settings')}

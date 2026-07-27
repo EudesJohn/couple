@@ -5,6 +5,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import LockScreen from './pages/LockScreen';
 import ChatLayout from './pages/ChatLayout';
 import Chat from './pages/Chat';
+import CycleCalendar from './pages/CycleCalendar';
 import Settings from './pages/Settings';
 import CallScreen from './pages/CallScreen';
 import { requestNotificationPermission } from './hooks/useNotifications';
@@ -24,6 +25,7 @@ export default function App() {
             <Route path="/chat" element={<ChatLayout />}>
               <Route index element={<Chat />} />
             </Route>
+            <Route path="/cycle" element={<CycleCalendar />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/call" element={<CallScreen />} />
             <Route path="*" element={<Navigate to="/" replace />} />

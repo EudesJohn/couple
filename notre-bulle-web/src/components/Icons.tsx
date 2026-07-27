@@ -153,3 +153,12 @@ export const ReplyIcon = createIcon('M9 10l-5 5 5 5 M20 4v7a4 4 0 0 1-4 4H4');
 
 // Poubelle (supprimer)
 export const TrashIcon = createIcon('M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6');
+
+// Chevron gauche
+export const ChevronLeftIcon = createIcon('M15 18l-6-6 6-6');
+
+// Chevron droit
+export const ChevronRightIcon = createIcon('M9 18l6-6-6-6');
+
+// Cycle / Calendrier (lune/croissant)
+export const CycleIcon = createIcon('M21 12a9 9 0 1 1-9-9 M21 3v6h-6 M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z');
