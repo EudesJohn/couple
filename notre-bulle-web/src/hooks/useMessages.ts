@@ -40,9 +40,13 @@ export function useMessages(): UseMessagesReturn {
   const [convId, setConvId] = useState<string | null>(null);
   const myProfileIdRef = useRef<string | null>(null);
   const isLoadingRef = useRef(true);
+  const convIdRef = useRef<string | null>(null);
 
   // Set des IDs de messages déjà marqués "lu" pour éviter les doublons
   const markedReadRef = useRef<Set<string>>(new Set());
+
+  // Timestamp du dernier message connu (pour le polling de secours)
+  const lastMsgTimestampRef = useRef<string | null>(null);
 
   // ==========================================
   // Récupération de l'ID du profil
@@ -120,6 +124,10 @@ export function useMessages(): UseMessagesReturn {
           if (data) {
             const fetched = data as unknown as MessageWithDetails[];
             setMessages(fetched);
+            // Mettre à jour le timestamp du dernier message pour le polling
+            if (fetched.length > 0) {
+              lastMsgTimestampRef.current = fetched[fetched.length - 1].created_at;
+            }
             // Mettre à jour le cache avec les données fraîches
             cacheMessages(loadedConvId, fetched).catch(() => {});
           }
@@ -130,6 +138,7 @@ export function useMessages(): UseMessagesReturn {
           setIsLoading(false);
           isLoadingRef.current = false;
           // Déclencher l'effet 2 (Realtime) avec le convId chargé
+          convIdRef.current = loadedConvId;
           setConvId(loadedConvId);
         }
       } catch (err) {
@@ -303,7 +312,63 @@ export function useMessages(): UseMessagesReturn {
   }, [convId]);
 
   // ==========================================
-  // EFFET 3 — Marquage "lu" automatique
+  // EFFET 3 — Polling de secours (Realtime fallback)
+  // Sur mobile, Realtime peut être déconnecté après mise en veille.
+  // Ce polling rafraîchit les messages toutes les 15s en arrière-plan.
+  // ==========================================
+  useEffect(() => {
+    if (!convId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        // Chercher les messages plus récents que le dernier connu
+        const since = lastMsgTimestampRef.current;
+        if (!since) return;
+
+        const { data, error } = await supabase
+          .from('messages')
+          .select(`
+            *,
+            sender:profiles!sender_id(id, display_name, avatar_url),
+            attachments(*),
+            statuses:message_status(*),
+            reply_to_message:messages!reply_to(id, content, type)
+          `)
+          .eq('conversation_id', convId)
+          .gt('created_at', since)
+          .order('created_at', { ascending: true });
+
+        if (error || !data || data.length === 0) return;
+
+        const newMsgs = data as unknown as MessageWithDetails[];
+
+        setMessages((prev) => {
+          const existing = new Set(prev.map((m) => m.id));
+          const toAdd = newMsgs.filter((m) => !existing.has(m.id));
+          if (toAdd.length === 0) return prev;
+          return [...prev, ...toAdd];
+        });
+
+        // Mettre à jour le timestamp et le cache
+        const latest = newMsgs[newMsgs.length - 1];
+        if (latest.created_at > (lastMsgTimestampRef.current || '')) {
+          lastMsgTimestampRef.current = latest.created_at;
+        }
+
+        // Mettre en cache les nouveaux messages
+        for (const msg of newMsgs) {
+          addCachedMessage(msg).catch(() => {});
+        }
+      } catch {
+        // Polling silencieux — pas de spam d'erreurs
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [convId]);
+
+  // ==========================================
+  // EFFET 4 — Marquage "lu" automatique
   // Dès que des messages du partenaire sont affichés,
   // on insère/update message_status → 'read'
   // ==========================================
@@ -415,6 +480,31 @@ export function useMessages(): UseMessagesReturn {
         height: attachmentData.height ?? null,
       });
     }
+
+    // === Ajout optimiste au state local ===
+    // Évite d'attendre Realtime (qui peut être lent ou déconnecté sur mobile)
+    const optimisticMsg: MessageWithDetails = {
+      ...msg,
+      sender: { id: profileId, display_name: '', avatar_url: '' },
+      attachments: [],
+      statuses: [{
+        message_id: msg.id,
+        profile_id: profileId,
+        status: 'sent',
+        created_at: msg.created_at,
+        read_at: null,
+      }],
+      reply_to_message: null,
+    };
+    setMessages((prev) => {
+      if (prev.some((m) => m.id === msg.id)) return prev;
+      return [...prev, optimisticMsg];
+    });
+    // Mettre à jour le timestamp pour le polling
+    if (!lastMsgTimestampRef.current || msg.created_at > lastMsgTimestampRef.current) {
+      lastMsgTimestampRef.current = msg.created_at;
+    }
+    addCachedMessage(optimisticMsg).catch(() => {});
 
     return true;
   }, [convId, myProfileId]);
