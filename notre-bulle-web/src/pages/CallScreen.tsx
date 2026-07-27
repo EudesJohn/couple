@@ -163,9 +163,14 @@ export default function CallScreen() {
         setWebRTCStreams({ local: streams.local, remote: streams.remote });
       }
       // Mise à jour directe de srcObject pour éviter les problèmes de timing
-      // quand l'élément se monte après que le flux est déjà disponible
-      if (localVideoRef.current) localVideoRef.current.srcObject = streams.local;
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = streams.remote;
+      // quand l'élément se monte après que le flux est déjà disponible.
+      // Ne réaffecte que si la référence a changé pour éviter un reset du rendu.
+      if (localVideoRef.current && localVideoRef.current.srcObject !== streams.local) {
+        localVideoRef.current.srcObject = streams.local;
+      }
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== streams.remote) {
+        remoteVideoRef.current.srcObject = streams.remote;
+      }
     }, 500);
     return () => clearInterval(interval);
   }, []);
@@ -209,16 +214,21 @@ export default function CallScreen() {
       <div style={{ position: 'absolute', inset: 0 }}>
         {isVideo && (
           <div style={{ position: 'absolute', inset: 0 }}>
-            {isConnected && webRTCStreams.remote ? (
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
-            ) : (
+            {/* Vidéo distante — toujours montée pour éviter le saut d'image */}
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              style={{
+                width: '100%', height: '100%', objectFit: 'cover',
+                opacity: isConnected && webRTCStreams.remote ? 1 : 0,
+                transition: 'opacity 0.3s ease',
+              }}
+            />
+            {/* Placeholder superposé tant que le flux n'est pas prêt */}
+            {(!isConnected || !webRTCStreams.remote) && (
               <div style={{
-                width: '100%', height: '100%',
+                position: 'absolute', inset: 0,
                 display: 'flex', justifyContent: 'center', alignItems: 'center',
                 backgroundColor: '#1A1120',
               }}>
@@ -231,7 +241,7 @@ export default function CallScreen() {
           <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.3)' }} />
         )}
 
-        {/* PiP local */}
+        {/* PiP local — vidéo toujours montée */}
         {isVideo && (
           <div style={{
             position: 'absolute', top: 60, right: 16,
@@ -239,17 +249,20 @@ export default function CallScreen() {
             border: `2px solid rgba(255,255,255,0.2)`,
             boxShadow: '0 8px 16px rgba(0,0,0,0.4)',
           }}>
-            {isConnected && webRTCStreams.local ? (
-              <video
-                ref={localVideoRef}
-                autoPlay
-                playsInline
-                muted
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
-            ) : (
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{
+                width: '100%', height: '100%', objectFit: 'cover',
+                opacity: isConnected && webRTCStreams.local ? 1 : 0,
+                transition: 'opacity 0.3s ease',
+              }}
+            />
+            {(!isConnected || !webRTCStreams.local) && (
               <div style={{
-                width: '100%', height: '100%',
+                position: 'absolute', inset: 0,
                 display: 'flex', justifyContent: 'center', alignItems: 'center',
                 backgroundColor: '#2D1B36',
               }}>

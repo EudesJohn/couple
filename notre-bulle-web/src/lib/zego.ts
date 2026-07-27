@@ -113,7 +113,11 @@ class WebRTCManager {
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
         audio: true,
-        video, // Only request camera when it's a video call
+        video: video ? {
+          width: { ideal: 640, max: 1280 },
+          height: { ideal: 480, max: 720 },
+          frameRate: { ideal: 24 },
+        } : false,
       });
 
       this.localStream.getTracks().forEach(track => {
@@ -147,6 +151,7 @@ class WebRTCManager {
     this.offerSent = true;
     const offer = await this.pc!.createOffer();
     await this.pc!.setLocalDescription(offer);
+    await this.limitVideoBitrate();
     await this.sendSignal('sdp-offer', { sdp: offer.sdp, type: offer.type });
   }
 
@@ -180,6 +185,7 @@ class WebRTCManager {
 
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
+      await this.limitVideoBitrate();
       await this.sendSignal('sdp-answer', { sdp: answer.sdp, type: answer.type });
     } catch (err) {
       console.error('[WebRTC] Erreur handleOffer:', err);
@@ -213,6 +219,25 @@ class WebRTCManager {
       event,
       payload,
     });
+  }
+
+  // Limite le débit vidéo pour éviter les sauts d'image sur connexion mobile
+  private async limitVideoBitrate(): Promise<void> {
+    if (!this.pc) return;
+    const senders = this.pc.getSenders();
+    for (const sender of senders) {
+      if (sender.track?.kind === 'video') {
+        try {
+          const params = sender.getParameters();
+          if (!params.encodings) params.encodings = [{}];
+          // 500 kbps max — suffisant pour 480p fluide sans saturer le réseau
+          params.encodings[0].maxBitrate = 500_000;
+          await sender.setParameters(params).catch(() => {});
+        } catch {
+          // Silencieux si non supporté par le navigateur
+        }
+      }
+    }
   }
 
   async leaveRoom(roomID?: string): Promise<void> {
