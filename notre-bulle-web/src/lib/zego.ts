@@ -3,6 +3,7 @@
 // Web uniquement (plus de Zego native mobile)
 // ============================================================
 import { supabase } from './supabase';
+import { config } from '../constants/config';
 
 // ==========================================================
 // Types
@@ -50,10 +51,18 @@ class WebRTCManager {
   // (évite le polling 500ms dans CallScreen qui cause des sauts)
   private onRemoteStreamReady: ((stream: MediaStream) => void) | null = null;
 
-  private iceServers: RTCIceServer[] = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ];
+  private get iceServers(): RTCIceServer[] {
+    const servers: RTCIceServer[] = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ];
+    // Ajouter le serveur TURN configuré (variable d'env) si présent
+    const { url, username, credential } = config.turn;
+    if (url) {
+      servers.push({ urls: url, username: username || undefined, credential: credential || undefined });
+    }
+    return servers;
+  }
 
   setOnRemoteStreamReady(cb: ((stream: MediaStream) => void) | null): void {
     this.onRemoteStreamReady = cb;
