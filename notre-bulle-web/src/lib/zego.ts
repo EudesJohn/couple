@@ -51,16 +51,32 @@ class WebRTCManager {
   // (évite le polling 500ms dans CallScreen qui cause des sauts)
   private onRemoteStreamReady: ((stream: MediaStream) => void) | null = null;
 
-  private get iceServers(): RTCIceServer[] {
+  // Récupère les credentials TURN frais depuis l'API Metered.ca
+  private async fetchIceServers(): Promise<RTCIceServer[]> {
     const servers: RTCIceServer[] = [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
     ];
-    // Ajouter le serveur TURN configuré (variable d'env) si présent
-    const { url, username, credential } = config.turn;
-    if (url) {
-      servers.push({ urls: url, username: username || undefined, credential: credential || undefined });
+
+    // Si une clé Metered est configurée, récupérer des credentials TURN
+    // frais via l'API REST (évite l'expiration des credentials statiques)
+    if (config.meteredApiKey) {
+      try {
+        const res = await fetch(
+          `https://notre-bulle-web.metered.live/api/v1/turn/credentials?apiKey=${config.meteredApiKey}`
+        );
+        if (res.ok) {
+          const dynamic = await res.json();
+          if (Array.isArray(dynamic) && dynamic.length > 0) {
+            // L'API Metered retourne un tableau d'ICE servers complets
+            return dynamic;
+          }
+        }
+      } catch (err) {
+        console.warn('[WebRTC] Échec récupération TURN Metered, fallback STUN:', err);
+      }
     }
+
     return servers;
   }
 
@@ -77,7 +93,8 @@ class WebRTCManager {
 
     this.callId = roomID;
 
-    this.pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    const servers = await this.fetchIceServers();
+    this.pc = new RTCPeerConnection({ iceServers: servers });
 
     // Forcer H264 (encodage matériel sur mobile) pour réduire les sauts d'image
     this.preferH264Codec();
