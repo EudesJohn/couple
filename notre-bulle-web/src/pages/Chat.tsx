@@ -2,7 +2,7 @@
 // Chat — Texte + Médias (images, notes vocales)
 // Reply-to (Swipe), fond d'écran personnalisé, thème dynamique
 // ============================================================
-import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { colors as staticColors, spacing } from '../constants/theme';
 import { MessageBubble } from '../components/chat/MessageBubble';
@@ -87,21 +87,19 @@ export default function ChatScreen() {
   }, [lightbox]);
 
   // Scroll en bas
-  //  - 1er chargement : instantané (requestAnimationFrame, behavior:'auto')
-  //  - Rafraîchissement manuel terminé : instantané (idem)
+  //  - 1er chargement : instantané (useLayoutEffect, avant le paint)
+  //  - Rafraîchissement manuel terminé : instantané
   //  - Nouveau message Realtime : smooth discret (setTimeout + behavior:'smooth')
   const initialScrollDone = useRef(false);
   const prevIsRefreshing = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (isLoading || messages.length === 0 || !scrollRef.current) return;
     const el = scrollRef.current;
 
     if (!initialScrollDone.current) {
-      // Premier chargement : scroll instantané, pas de smooth qui défile du haut
+      // Premier chargement : scroll instantané AVANT le premier paint
       initialScrollDone.current = true;
-      requestAnimationFrame(() => {
-        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-      });
+      el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
       prevIsRefreshing.current = isRefreshing;
       return;
     }
@@ -109,9 +107,7 @@ export default function ChatScreen() {
     // Rafraîchissement manuel terminé (transition isRefreshing true→false)
     if (prevIsRefreshing.current && !isRefreshing) {
       prevIsRefreshing.current = false;
-      requestAnimationFrame(() => {
-        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-      });
+      el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
       return;
     }
     prevIsRefreshing.current = isRefreshing;
