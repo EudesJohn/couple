@@ -86,40 +86,73 @@ export default function ChatScreen() {
     };
   }, [lightbox]);
 
-  // Scroll en bas
-  //  - 1er chargement : instantané (useLayoutEffect, avant le paint)
-  //  - Rafraîchissement manuel terminé : instantané
-  //  - Nouveau message Realtime : smooth discret (setTimeout + behavior:'smooth')
+    // Scroll en bas
+  //  - 1er chargement : scrollIntoView sur l'anchor (avant paint, useLayoutEffect)
+  //    + MutationObserver les 2 premieres secondes pour rattraper les layout shifts
+  //    (images qui chargent, contenu qui s'etend)
+  //  - Rafraichissement manuel termine : instantane
+  //  - Nouveau message Realtime : smooth discret
   const initialScrollDone = useRef(false);
   const prevIsRefreshing = useRef(false);
+  const scrollAnchorRef = useRef<HTMLDivElement>(null);
+  const scrollObserverRef = useRef<MutationObserver | null>(null);
+  const scrollObserverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    scrollAnchorRef.current?.scrollIntoView({ behavior, block: 'nearest' });
+  }, []);
+
   useLayoutEffect(() => {
     if (isLoading || messages.length === 0 || !scrollRef.current) return;
-    const el = scrollRef.current;
 
     if (!initialScrollDone.current) {
-      // Premier chargement : scroll instantané AVANT le premier paint
+      // Premier chargement : scroll instantane AVANT le premier paint
       initialScrollDone.current = true;
-      el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+      scrollToBottom('auto');
+
+      // Observer les mutations du conteneur pendant 2s pour rattraper
+      // les layout shifts (images qui chargent dans les messages)
+      const container = scrollRef.current;
+      const observer = new MutationObserver(() => {
+        scrollToBottom('auto');
+      });
+      observer.observe(container, { childList: true, subtree: true, attributes: false, characterData: false });
+      scrollObserverRef.current = observer;
+
+      scrollObserverTimeoutRef.current = setTimeout(() => {
+        observer.disconnect();
+        scrollObserverRef.current = null;
+        scrollObserverTimeoutRef.current = null;
+      }, 2000);
+
       prevIsRefreshing.current = isRefreshing;
       return;
     }
 
-    // Rafraîchissement manuel terminé (transition isRefreshing true→false)
+    // Rafraichissement manuel termine (transition isRefreshing true->false)
     if (prevIsRefreshing.current && !isRefreshing) {
       prevIsRefreshing.current = false;
-      el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+      scrollToBottom('auto');
       return;
     }
     prevIsRefreshing.current = isRefreshing;
 
-    // Ne pas scroller pendant un rafraîchissement en cours
+    // Ne pas scroller pendant un rafraichissement en cours
     if (isRefreshing) return;
 
-    // Nouveau message arrivé (Realtime) : petit scroll discret
+    // Nouveau message arrive (Realtime) : petit scroll discret
     setTimeout(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      scrollToBottom('smooth');
     }, 100);
-  }, [messages.length, isLoading, isRefreshing]);
+  }, [messages.length, isLoading, isRefreshing, scrollToBottom]);
+
+  // Nettoyage du MutationObserver au demontage
+  useEffect(() => {
+    return () => {
+      scrollObserverRef.current?.disconnect();
+      if (scrollObserverTimeoutRef.current) clearTimeout(scrollObserverTimeoutRef.current);
+    };
+  }, []);
 
   // Demander la permission de notification au montage (fallback si pas fait depuis LockScreen)
   useEffect(() => {
@@ -366,6 +399,9 @@ export default function ChatScreen() {
               </div>
             );
           })}
+
+          {/* Scroll anchor : scrollIntoView sur cet element = tout voir en bas */}
+          <div ref={scrollAnchorRef} style={{ height: 0 }} />
 
           {/* Espace pour le typing indicator */}
           {isPartnerTyping && <div style={{ height: 50 }} />}
