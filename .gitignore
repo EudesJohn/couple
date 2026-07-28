@@ -49,3 +49,5 @@ qr-code.png
 
 # supabase RLS sql (one-time migration)
 supabase-rls-policies.sql
+
+.vercel
