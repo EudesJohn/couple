@@ -166,12 +166,23 @@ export function getMediaUrl(path: string): string {
   return data.publicUrl;
 }
 
-// Télécharger un fichier du Storage via l'API client (utilise RLS, pas besoin de bucket public)
-export async function downloadMedia(path: string): Promise<Blob> {
+// Télécharger un fichier du Storage via l'API REST directe
+// On ajoute un timestamp pour contourner le cache Workbox CacheFirst
+// qui garde les réponses 7 jours (important quand le fichier est écrasé
+// via upsert sur le même chemin — MEDIA/backgrounds/{userId}.jpg)
+export async function downloadMedia(path: string, options?: { cacheBust?: boolean }): Promise<Blob> {
   const bucket = path.split('/')[0] as keyof typeof BUCKETS;
-  const { data, error } = await supabase.storage.from(BUCKETS[bucket]).download(path);
-  if (error || !data) throw error || new Error('Fichier introuvable');
-  return data;
+  const bucketName = BUCKETS[bucket];
+  // Ne pas ajouter ?t=Date.now() par défaut : ça défait tout cache navigateur + Workbox
+  // pour TOUS les appels (StorageImage, VoiceNoteBubble, lightbox, background).
+  // Seul le fond d'écran (path fixe, écrasé par upsert) a besoin de contourner le cache.
+  const url = `${config.supabase.url}/storage/v1/object/${bucketName}/${path}`;
+  const finalUrl = options?.cacheBust ? `${url}?t=${Date.now()}` : url;
+  const response = await fetch(finalUrl, {
+    headers: { Authorization: `Bearer ${config.supabase.anonKey}` },
+  });
+  if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+  return response.blob();
 }
 
 // Déterminer si un MIME type est une image, vidéo ou audio

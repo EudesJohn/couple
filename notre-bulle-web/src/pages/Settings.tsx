@@ -375,6 +375,7 @@ export default function SettingsScreen() {
         } catch {
           setBgSrc(null);
         }
+        window.dispatchEvent(new CustomEvent('notre-bulle:theme-changed'));
         showToast('Fond d\'écran appliqué');
       } catch (err: any) {
         showAlert('error', 'Erreur', err?.message || 'Impossible de changer le fond');
@@ -387,6 +388,7 @@ export default function SettingsScreen() {
     await removeBackgroundImage();
     setBgPreview(null);
     setBgSrc(null);
+    window.dispatchEvent(new CustomEvent('notre-bulle:theme-changed'));
     showToast('Fond d\'écran retiré');
   }, [showToast]);
 
@@ -695,6 +697,7 @@ export default function SettingsScreen() {
                     setApplyingTheme(true);
                     setSelectedTheme(i);
                     await saveTheme({ bg: theme.bg, bubbleSelf: theme.bubbleSelf, bubbleOther: theme.bubbleOther });
+                    window.dispatchEvent(new CustomEvent('notre-bulle:theme-changed'));
                     setApplyingTheme(false);
                     showToast('Thème appliqué');
                   }}

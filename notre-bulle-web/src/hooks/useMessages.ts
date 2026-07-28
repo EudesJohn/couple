@@ -24,6 +24,8 @@ interface UseMessagesReturn {
   sendImage: (uri: string, mimeType: string, width: number, height: number) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<boolean>;
   isLoading: boolean;
+  isRefreshing: boolean;
+  refreshMessages: () => Promise<void>;
   isUploading: boolean;
   uploadProgress: number | null;
   myProfileId: string | null;
@@ -38,6 +40,7 @@ export function useMessages(): UseMessagesReturn {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [convId, setConvId] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const myProfileIdRef = useRef<string | null>(null);
   const isLoadingRef = useRef(true);
   const convIdRef = useRef<string | null>(null);
@@ -666,6 +669,56 @@ export function useMessages(): UseMessagesReturn {
   }, [createMessage]);
 
   // ==========================================
+  // RAFRAÎCHISSEMENT FORCÉ
+  // Vide le cache et recharge tous les messages
+  // ==========================================
+  const refreshMessages = useCallback(async () => {
+    if (!convId) return;
+    setIsRefreshing(true);
+
+    try {
+      // Re-fetch tous les messages depuis Supabase
+      const { data, error } = await supabase
+        .from('messages')
+        .select(`
+          *,
+          sender:profiles!sender_id(id, display_name, avatar_url),
+          attachments(*),
+          statuses:message_status(*),
+          reply_to_message:messages!reply_to(id, content, type)
+        `)
+        .eq('conversation_id', convId)
+        .order('created_at', { ascending: true })
+        .limit(100);
+
+      if (!error && data) {
+        const fetched = data as unknown as MessageWithDetails[];
+        // Functional updater : fusionne avec l'état existant pour ne PAS écraser
+        // les INSERT Realtime concurrents ET pour que les status (lu/délivré)
+        // soient bien mis à jour même si les IDs sont les mêmes.
+        setMessages((prev) => {
+          if (prev.length === 0) return fetched;
+          const map = new Map(prev.map((m) => [m.id, m]));
+          for (const msg of fetched) {
+            map.set(msg.id, msg);
+          }
+          return Array.from(map.values());
+        });
+        // Mettre à jour le timestamp du polling
+        if (fetched.length > 0) {
+          lastMsgTimestampRef.current = fetched[fetched.length - 1].created_at;
+        }
+        // Re-cacher (cacheMessages supprime les anciens messages de cette conversation)
+        cacheMessages(convId, fetched).catch(() => {});
+      }
+    } catch (err) {
+      console.warn('Erreur refreshMessages:', err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [convId]);
+
+  // ==========================================
   // SUPPRESSION D'UN MESSAGE
   // ==========================================
   const deleteMessage = useCallback(async (messageId: string): Promise<boolean> => {
@@ -690,6 +743,7 @@ export function useMessages(): UseMessagesReturn {
 
   return {
     messages, sendText, sendVoice, sendImage, deleteMessage,
-    isLoading, isUploading, uploadProgress, myProfileId, error,
+    isLoading, isRefreshing, refreshMessages,
+    isUploading, uploadProgress, myProfileId, error,
   };
 }

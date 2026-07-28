@@ -14,13 +14,35 @@ export function useTheme() {
   const [chatTheme, setChatTheme] = useState<ChatTheme | null>(null);
   const [bgSrc, setBgSrc] = useState<string | null>(null);
   const bgBlobRef = useRef<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0); // incrémenté pour forcer le rechargement
 
   const refresh = useCallback(async () => {
     const theme = await getTheme();
     setChatTheme(theme);
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  // Chargement initial + réaction aux changements localStorage (même onglet)
+  useEffect(() => {
+    refresh();
+  }, [refresh, refreshKey]);
+
+  // Écouter les changements localStorage (autre onglet / custom event)
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'notre-bulle.theme') {
+        setRefreshKey((k) => k + 1);
+      }
+    };
+    const onThemeChange = () => {
+      setRefreshKey((k) => k + 1);
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('notre-bulle:theme-changed', onThemeChange);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('notre-bulle:theme-changed', onThemeChange);
+    };
+  }, []);
 
   // Résoudre le fond d'écran : si c'est un chemin Storage, télécharger via
   // downloadMedia() et créer une blob URL. Si c'est une URL legacy, l'utiliser.
@@ -38,7 +60,8 @@ export function useTheme() {
     if (!bg) return;
 
     if (bg.startsWith('MEDIA/') || bg.startsWith('VOICE_NOTES/') || bg.startsWith('THUMBNAILS/')) {
-      downloadMedia(bg)
+      // Cache-bust uniquement pour le fond d'écran (chemin fixe écrasé par upsert)
+      downloadMedia(bg, { cacheBust: true })
         .then(blob => {
           if (cancelled) return;
           const url = URL.createObjectURL(blob);

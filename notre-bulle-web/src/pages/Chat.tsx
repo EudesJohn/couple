@@ -15,7 +15,7 @@ import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useTheme } from '../hooks/useTheme';
 import { downloadMedia } from '../lib/media';
 import { fonts } from '../constants/theme';
-import { AlertIcon, HeartFilledIcon } from '../components/Icons';
+import { AlertIcon, HeartFilledIcon, RefreshIcon } from '../components/Icons';
 import { requestNotificationPermission } from '../hooks/useNotifications';
 import type { MessageWithDetails } from '../types/database';
 
@@ -53,7 +53,7 @@ function DateSeparator({ date }: { date: string }) {
 
 export default function ChatScreen() {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { messages, sendText, sendVoice, sendImage, deleteMessage, isLoading, isUploading, uploadProgress, myProfileId, error } = useMessages();
+  const { messages, sendText, sendVoice, sendImage, deleteMessage, isLoading, isUploading, uploadProgress, myProfileId, error, isRefreshing, refreshMessages } = useMessages();
   const { setIsTyping, partnerPresence } = usePresence();
   const { pickImage, takePhoto } = useMediaPicker();
   const { bubbleSelf, bubbleOther, bg, backgroundImage } = useTheme();
@@ -86,14 +86,44 @@ export default function ChatScreen() {
     };
   }, [lightbox]);
 
-  // Scroll en bas aux nouveaux messages
+  // Scroll en bas
+  //  - 1er chargement : instantané (requestAnimationFrame, behavior:'auto')
+  //  - Rafraîchissement manuel terminé : instantané (idem)
+  //  - Nouveau message Realtime : smooth discret (setTimeout + behavior:'smooth')
+  const initialScrollDone = useRef(false);
+  const prevIsRefreshing = useRef(false);
   useEffect(() => {
-    if (!isLoading && messages.length > 0 && scrollRef.current) {
-      setTimeout(() => {
-        scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-      }, 100);
+    if (isLoading || messages.length === 0 || !scrollRef.current) return;
+    const el = scrollRef.current;
+
+    if (!initialScrollDone.current) {
+      // Premier chargement : scroll instantané, pas de smooth qui défile du haut
+      initialScrollDone.current = true;
+      requestAnimationFrame(() => {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+      });
+      prevIsRefreshing.current = isRefreshing;
+      return;
     }
-  }, [messages.length, isLoading]);
+
+    // Rafraîchissement manuel terminé (transition isRefreshing true→false)
+    if (prevIsRefreshing.current && !isRefreshing) {
+      prevIsRefreshing.current = false;
+      requestAnimationFrame(() => {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+      });
+      return;
+    }
+    prevIsRefreshing.current = isRefreshing;
+
+    // Ne pas scroller pendant un rafraîchissement en cours
+    if (isRefreshing) return;
+
+    // Nouveau message arrivé (Realtime) : petit scroll discret
+    setTimeout(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }, 100);
+  }, [messages.length, isLoading, isRefreshing]);
 
   // Demander la permission de notification au montage (fallback si pas fait depuis LockScreen)
   useEffect(() => {
@@ -215,6 +245,47 @@ export default function ChatScreen() {
           position: 'relative',
         }}
       >
+        {/* Bouton rafraîchissement très fort */}
+        <div style={{
+          position: 'sticky',
+          top: spacing.sm,
+          right: spacing.sm,
+          zIndex: 10,
+          display: 'flex',
+          justifyContent: 'flex-end',
+          padding: `0 ${spacing.md}px`,
+          pointerEvents: 'none',
+        }}>
+          <motion.button
+            whileTap={{ scale: 0.85 }}
+            whileHover={{ scale: 1.1 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              refreshMessages();
+            }}
+            disabled={isRefreshing}
+            title="Forcer le rafraîchissement"
+            aria-label="Rafraîchir les messages"
+            style={{
+              width: 36, height: 36, borderRadius: 18,
+              border: 'none', cursor: 'pointer',
+              backgroundColor: isRefreshing ? 'rgba(128,128,128,0.7)' : 'rgba(0,0,0,0.6)',
+              backdropFilter: 'blur(8px)',
+              WebkitBackdropFilter: 'blur(8px)',
+              display: 'flex', justifyContent: 'center', alignItems: 'center',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+              pointerEvents: 'auto',
+            }}
+          >
+            <motion.div
+              animate={isRefreshing ? { rotate: 360 } : { rotate: 0 }}
+              transition={isRefreshing ? { repeat: Infinity, duration: 1, ease: 'linear' } : {}}
+              style={{ display: 'flex' }}
+            >
+              <RefreshIcon size={20} color="#FFFFFF" />
+            </motion.div>
+          </motion.button>
+        </div>
         <div style={{ minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
           {messagesWithSeparators.length === 0 && !isLoading && (
             <motion.div

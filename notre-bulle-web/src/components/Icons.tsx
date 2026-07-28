@@ -162,3 +162,6 @@ export const ChevronRightIcon = createIcon('M9 18l6-6-6-6');
 
 // Cycle / Calendrier (lune/croissant)
 export const CycleIcon = createIcon('M21 12a9 9 0 1 1-9-9 M21 3v6h-6 M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z');
+
+// Refresh / Rafraîchir (flèches circulaires)
+export const RefreshIcon = createIcon('M23 4v6h-6 M1 20v-6h6 M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15');

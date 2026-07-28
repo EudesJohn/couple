@@ -31,7 +31,7 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/jaokoojmfplrknthrbhf\.supabase\.co\/storage\/v1\/.*/i,
-            handler: 'CacheFirst',
+            handler: 'NetworkFirst',
             options: {
               cacheName: 'supabase-storage',
               expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 * 7 },

@@ -46,36 +46,31 @@ async function registerPushSubscription(): Promise<boolean> {
       return false;
     }
 
-    const registration = await navigator.serviceWorker.ready;
-
-    // Vérifier si déjà abonné
-    let subscription = await registration.pushManager.getSubscription();
-
-    // Si déjà abonné, vérifier que la clé VAPID est toujours la même
-    if (subscription) {
-      return true;
-    }
-
-    // S'abonner au push
-    if (!config.vapidPublicKey) {
-      console.warn('VITE_VAPID_PUBLIC_KEY non définie — push désactivé');
-      return false;
-    }
-
-    const applicationServerKey = urlBase64ToUint8Array(config.vapidPublicKey);
-
-    subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: applicationServerKey as any,
-    });
-
-    // Envoyer l'abonnement au backend
     const profileId = getOwnProfileId();
     if (!profileId) {
       console.warn('Aucun profileId — push subscription non enregistrée');
       return false;
     }
 
+    if (!config.vapidPublicKey) {
+      console.warn('VITE_VAPID_PUBLIC_KEY non définie — push désactivé');
+      return false;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+
+    // Vérifier si déjà abonné, sinon s'abonner
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      const applicationServerKey = urlBase64ToUint8Array(config.vapidPublicKey);
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: applicationServerKey as any,
+      });
+    }
+
+    // Toujours envoyer l'abonnement au backend (même s'il existe déjà côté navigateur)
+    // Ceci garanti que le serveur a toujours la dernière signature du téléphone
     const subData = subscription.toJSON();
     const response = await fetch(`${apiBase()}/push/subscribe`, {
       method: 'POST',
@@ -93,7 +88,7 @@ async function registerPushSubscription(): Promise<boolean> {
       return false;
     }
 
-    console.log('✅ Push subscription enregistrée');
+    console.log('✅ Push subscription synchronisée avec le serveur');
     return true;
   } catch (err) {
     console.warn('Erreur registerPushSubscription:', err);
