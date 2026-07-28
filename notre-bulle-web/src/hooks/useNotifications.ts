@@ -152,8 +152,8 @@ async function sendWebNotification(title: string, body: string, data?: Record<st
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification(title, {
         body,
-        icon: '/favicon.jpg',
-        badge: '/favicon.jpg',
+        icon: '/icon-192.jpg',
+        badge: '/icon-192.jpg',
         tag: 'notre-bulle',
         data,
         vibrate: [200, 100, 200],
@@ -169,8 +169,8 @@ async function sendWebNotification(title: string, body: string, data?: Record<st
   try {
     const notif = new Notification(title, {
       body,
-      icon: '/favicon.jpg',
-      badge: '/favicon.jpg',
+      icon: '/icon-192.jpg',
+      badge: '/icon-192.jpg',
       tag: 'notre-bulle',
       data,
     });
