@@ -11,8 +11,8 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { uploadMedia, compressImage } from '../lib/media';
 import { cacheMessages, getCachedMessages, addCachedMessage, updateCachedMessage, removeCachedMessage } from '../lib/cache';
-import { getMyProfileId as getProfileId, getActualPartnerProfileId, getOwnProfileId } from '../lib/profile';
-import { notifyNewMessage, triggerPushNotification } from './useNotifications';
+import { getMyProfileId as getProfileId } from '../lib/profile';
+import { notifyNewMessage } from './useNotifications';
 import type { MessageWithDetails, Message, MessageType, Attachment, MessageStatus } from '../types/database';
 
 let msgMountId = 0;
@@ -570,24 +570,6 @@ export function useMessages(): UseMessagesReturn {
       lastMsgTimestampRef.current = msg.created_at;
     }
     addCachedMessage(optimisticMsg).catch(() => {});
-
-    // === Envoi d'une notification push au partenaire ===
-    // (en arrière-plan — pas bloquant)
-    const partnerProfileId = getActualPartnerProfileId();
-    if (partnerProfileId) {
-      const senderProfileId = getOwnProfileId();
-      const senderName = optimisticMsg.sender?.display_name || 'Partenaire';
-      const body = type === 'text' && content ? content
-        : type === 'image' ? 'Photo'
-        : type === 'voice' ? 'Message vocal'
-        : type === 'video' ? 'Vidéo'
-        : 'Nouveau message';
-
-      triggerPushNotification(partnerProfileId, senderName, body, {
-        screen: 'chat',
-        conversationId: convId,
-      }).catch(() => {});
-    }
 
     return true;
   }, [convId, myProfileId]);

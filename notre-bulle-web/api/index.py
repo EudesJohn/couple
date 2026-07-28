@@ -10,7 +10,7 @@ from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from statistics import median, stdev
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -293,6 +293,7 @@ SUPABASE_ANON_KEY = os.environ.get("VITE_SUPABASE_ANON_KEY", "")
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_CLAIM_EMAIL = os.environ.get("VAPID_CLAIM_EMAIL", "admin@notre-bulle.app")
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 
 def get_supabase_headers() -> Dict[str, str]:
@@ -371,6 +372,46 @@ async def delete_subscription(profile_id: str, endpoint: str) -> bool:
         return resp.status_code in (200, 204)
 
 
+async def get_conversation_recipient(conv_id: str, sender_id: str) -> Optional[str]:
+    """Trouve le profil du destinataire dans une conversation (l'autre membre)."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return None
+
+    url = f"{SUPABASE_URL}/rest/v1/conversation_members?conversation_id=eq.{httpx.utils.quote(conv_id)}&select=profile_id"
+    headers = get_supabase_headers()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            logger.warning(f"Erreur récupération membres conv {conv_id}: {resp.status_code}")
+            return None
+
+        members = resp.json()
+        for member in members:
+            if member.get("profile_id") != sender_id:
+                return member["profile_id"]
+
+    logger.warning(f"Aucun destinataire trouvé dans conv {conv_id} (sender={sender_id})")
+    return None
+
+
+async def get_sender_profile(profile_id: str) -> Optional[Dict[str, Any]]:
+    """Récupère les infos d'un profil (display_name)."""
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return None
+
+    url = f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{httpx.utils.quote(profile_id)}&select=id,display_name"
+    headers = get_supabase_headers()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                return data[0]
+        return None
+
+
 # ============================================================
 # MODÈLES PUSH
 # ============================================================
@@ -387,6 +428,15 @@ class PushNotifyIn(BaseModel):
     title: str
     body: str
     data: Optional[Dict[str, Any]] = None
+
+
+class WebhookPayload(BaseModel):
+    """Payload reçu d'un Database Webhook Supabase."""
+    type: str
+    table: str
+    record: Dict[str, Any]
+    schema: str
+    old_record: Optional[Dict[str, Any]] = None
 
 
 # ============================================================
@@ -519,6 +569,105 @@ async def push_notify(request: PushNotifyIn):
         except Exception as e:
             errors.append(str(e))
             logger.error(f"Erreur envoi push à {sub['endpoint'][:50]}...: {e}")
+
+    return {
+        "status": "ok",
+        "sent": sent_count,
+        "total": len(subscriptions),
+        "errors": errors if errors else None,
+    }
+
+
+@app.post("/api/push/on-new-message")
+async def push_on_new_message(
+    payload: WebhookPayload,
+    x_supabase_secret: Optional[str] = Header(None, alias="X-Supabase-Secret"),
+):
+    """
+    Endpoint appelé par le Supabase Database Webhook à chaque INSERT
+    dans la table 'messages'. Envoie une notification push au destinataire
+    du message de façon fiable (côté serveur).
+    """
+    # Vérifier le secret partagé (si configuré)
+    if WEBHOOK_SECRET and x_supabase_secret != WEBHOOK_SECRET:
+        logger.warning("Tentative d'accès webhook avec secret invalide")
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+
+    if payload.type != "INSERT" or payload.table != "messages":
+        return {"status": "ignored", "reason": "type or table mismatch"}
+
+    record = payload.record
+    if not record or not record.get("id"):
+        return {"status": "ignored", "reason": "empty record"}
+
+    # Ne pas envoyer de push pour les messages de type 'call' (gérés localement)
+    msg_type = record.get("type", "")
+    if msg_type == "call":
+        return {"status": "ignored", "reason": "call type messages handled locally"}
+
+    conv_id = record.get("conversation_id")
+    sender_id = record.get("sender_id")
+    if not conv_id or not sender_id:
+        return {"status": "ignored", "reason": "missing conversation_id or sender_id"}
+
+    # Trouver le destinataire
+    recipient_id = await get_conversation_recipient(conv_id, sender_id)
+    if not recipient_id:
+        logger.info(f"Aucun destinataire pour le message {record.get('id')}")
+        return {"status": "ok", "sent": 0, "total": 0}
+
+    # Récupérer le nom de l'expéditeur
+    sender_profile = await get_sender_profile(sender_id)
+    sender_name = sender_profile.get("display_name", "Partenaire") if sender_profile else "Partenaire"
+
+    # Construire le corps de la notification
+    content = record.get("content")
+    body = (
+        content if msg_type == "text" and content
+        else "Photo" if msg_type == "image"
+        else "Message vocal" if msg_type == "voice"
+        else "Vidéo" if msg_type == "video"
+        else "Nouveau message"
+    )
+
+    # Récupérer les souscriptions push du destinataire
+    subscriptions = await get_subscriptions(recipient_id)
+    if not subscriptions:
+        logger.info(f"Aucune subscription push pour {recipient_id}")
+        return {"status": "ok", "sent": 0, "total": 0}
+
+    # Payload push
+    push_payload = {
+        "title": sender_name,
+        "body": body,
+        "data": {
+            "screen": "chat",
+            "conversationId": conv_id,
+        },
+        "tag": "notre-bulle",
+    }
+    payload_bytes = json.dumps(push_payload).encode("utf-8")
+
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+        logger.error("VAPID keys non configurées — push impossible")
+        # Retourner 200 pour ne pas faire retry le webhook
+        return {"status": "ok", "sent": 0, "total": 0, "warning": "VAPID not configured"}
+
+    sent_count = 0
+    errors = []
+
+    for sub in subscriptions:
+        try:
+            await _send_single_push(
+                endpoint=sub["endpoint"],
+                p256dh_key=sub["p256dh_key"],
+                auth_key=sub["auth_key"],
+                payload_bytes=payload_bytes,
+            )
+            sent_count += 1
+        except Exception as e:
+            errors.append(str(e))
+            logger.error(f"Erreur envoi push webhook à {sub['endpoint'][:50]}...: {e}")
 
     return {
         "status": "ok",

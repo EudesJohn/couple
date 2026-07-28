@@ -10,7 +10,7 @@ export default defineConfig({
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
-      includeAssets: ['favicon.png'],
+      includeAssets: ['favicon.jpg'],
       manifest: {
         name: 'Notre Bulle',
         short_name: 'Notre Bulle',
@@ -22,8 +22,8 @@ export default defineConfig({
         orientation: 'portrait',
         start_url: '/',
         icons: [
-          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/favicon.jpg', sizes: '192x192', type: 'image/jpeg' },
+          { src: '/favicon.jpg', sizes: '512x512', type: 'image/jpeg' },
         ],
       },
       workbox: {
