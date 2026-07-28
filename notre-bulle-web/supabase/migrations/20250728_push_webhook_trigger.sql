@@ -18,7 +18,7 @@ as $$
 declare
   payload text;
   webhook_url text := 'https://notre-bulle.vercel.app/api/push/on-new-message';
-  webhook_secret text := 'e9ac521d-6e1d-4668-9d94-14770e6efbf3'; -- à mettre à jour si changé
+  webhook_secret text := 'e9ac521d-6e1d-4668-9d94-14770e6efbf3';
 begin
   -- Construire le payload au format attendu par l'API (similaire au webhook Supabase)
   payload := jsonb_build_object(
@@ -28,15 +28,22 @@ begin
     'record', row_to_json(new)::jsonb
   )::text;
 
-  -- Envoyer la requête HTTP POST via pg_net (asynchrone, ne bloque pas)
-  perform net.http_post(
-    url := webhook_url,
-    body := payload,
-    headers := array[
-      'Content-Type', 'application/json',
-      'X-Supabase-Secret', webhook_secret
-    ]
-  );
+  -- Envoyer la requête HTTP POST via pg_net (asynchrone)
+  -- IMPORTANT: le BEGIN/EXCEPTION garantit que même si pg_net n'est pas
+  -- activée ou si le webhook échoue, le message est quand même inséré.
+  begin
+    perform net.http_post(
+      url := webhook_url,
+      body := payload,
+      headers := array[
+        'Content-Type', 'application/json',
+        'X-Supabase-Secret', webhook_secret
+      ]
+    );
+  exception when others then
+    -- Ne JAMAIS bloquer l'insertion du message
+    null;
+  end;
 
   return new;
 end;
