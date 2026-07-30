@@ -8,7 +8,7 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getWebRTCStreams, setOnRemoteStreamReady } from '../lib/zego';
+import { getWebRTCStreams, setOnRemoteStreamReady, requestPictureInPicture, exitPictureInPicture, isPiPSupported } from '../lib/zego';
 import { colors, borderRadius } from '../constants/theme';
 import { useCall } from '../hooks/useCall';
 import {
@@ -320,7 +320,13 @@ export default function CallScreen() {
     }}>
       {/* Bouton minimiser */}
       <button
-        onClick={() => navigate(-1)}
+        onClick={() => {
+          // Si appel vidéo connecté, entrer en PiP avant de minimiser
+          if (isVideo && isConnected) {
+            requestPictureInPicture();
+          }
+          navigate(-1);
+        }}
         aria-label="Minimiser"
         style={{
           position: 'absolute', top: 16, left: 16, zIndex: 20,

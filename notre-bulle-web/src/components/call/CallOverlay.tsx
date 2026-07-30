@@ -17,8 +17,9 @@ import { useCall } from '../../hooks/useCall';
 import { getWebRTCStreams, setOnRemoteStreamReady } from '../../lib/zego';
 import { colors, borderRadius } from '../../constants/theme';
 import {
-  MicIcon, MicOffIcon, PhoneOffIcon, VideoIcon,
+  MicIcon, MicOffIcon, PhoneOffIcon, VideoIcon, FlipCameraIcon,
 } from '../Icons';
+import { setPipVideoElement, requestPictureInPicture, exitPictureInPicture, isPiPSupported } from '../../lib/zego';
 
 // ==========================================
 // FORMATAGE DURÉE D'APPEL
@@ -84,6 +85,7 @@ export default function CallOverlay() {
   const location = useLocation();
   const navigate = useNavigate();
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const pipVideoRef = useRef<HTMLVideoElement>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -135,12 +137,45 @@ export default function CallOverlay() {
     return () => clearInterval(interval);
   }, []);
 
-  // Attacher le flux à la ref vidéo
+  // Attacher le flux à la ref vidéo (miniature overlay)
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
     }
   }, [remoteStream]);
+
+  // ==========================================
+  // PiP — attacher le flux distant à l'élément
+  // vidéo PiP et enregistrer la référence
+  // ==========================================
+  useEffect(() => {
+    const el = pipVideoRef.current;
+    if (el && remoteStream) {
+      el.srcObject = remoteStream;
+    }
+    setPipVideoElement(el);
+
+    // Quand l'utilisateur ferme la fenêtre PiP (bouton X ou retour),
+    // on le ramène vers l'écran d'appel si l'appel est toujours actif
+    const onLeavePip = () => {
+      if (callState === 'connected') {
+        navigate('/call');
+      }
+    };
+    el?.addEventListener('leavepictureinpicture', onLeavePip);
+
+    return () => {
+      setPipVideoElement(null);
+      el?.removeEventListener('leavepictureinpicture', onLeavePip);
+    };
+  }, [remoteStream, callState, navigate]);
+
+  // Sortir du PiP quand l'appel se termine
+  useEffect(() => {
+    if (callState === 'idle' || callState === 'ended') {
+      exitPictureInPicture();
+    }
+  }, [callState]);
 
   // Clamp les offsets pour rester dans la fenêtre
   const clampOffset = useCallback((x: number, y: number) => {
@@ -207,9 +242,59 @@ export default function CallOverlay() {
 
   // ─── PAS DE RETURN ANTICIPÉ — on utilise AnimatePresence pour
   //     contrôler l'affichage, ce qui préserve le nombre de hooks ───
+  const pipSupported = isPiPSupported();
+  const pipActive = typeof document !== 'undefined' && !!document.pictureInPictureElement;
+
   return (
-    <AnimatePresence>
-      {!isOnCallScreen && notIdle && (
+    <>
+      {/* Élément vidéo PiP — toujours présent dans le DOM tant que
+          l'appel vidéo est actif. Positionné hors-écran (1×1 px,
+          transparent). C'est sur CET élément que requestPictureInPicture()
+          est appelé, ce qui crée une vraie fenêtre flottante OS.
+          Ne doit PAS être dans AnimatePresence car il doit survivre
+          au démontage de CallScreen. */}
+      {notIdle && isVideo && (
+        <video
+          ref={pipVideoRef}
+          autoPlay
+          playsInline
+          muted
+          disablePictureInPicture={false}
+          style={{
+            position: 'fixed',
+            width: 1, height: 1,
+            opacity: 0,
+            pointerEvents: 'none',
+            zIndex: -1,
+          }}
+        />
+      )}
+
+      {pipActive && isVideo && notIdle && (
+        <div style={{
+          position: 'fixed', top: 16, left: 16, zIndex: 9999,
+          display: 'flex', gap: 8,
+        }}>
+          <MiniControlBtn
+            onClick={(e) => { e.stopPropagation(); exitPictureInPicture(); }}
+            label="Plein écran"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FAFAF9" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+            </svg>
+          </MiniControlBtn>
+          <MiniControlBtn
+            onClick={(e) => { e.stopPropagation(); endCall(); }}
+            danger
+            label="Raccrocher"
+          >
+            <PhoneOffIcon size={14} color="#FAFAF9" />
+          </MiniControlBtn>
+        </div>
+      )}
+
+      <AnimatePresence>
+        {!isOnCallScreen && notIdle && (
         <motion.div
           ref={setContainerRef}
           initial={{ y: 100, opacity: 0, scale: 0.9 }}
@@ -353,6 +438,18 @@ export default function CallOverlay() {
                   }
                 </MiniControlBtn>
 
+                {isVideo && pipSupported && (
+                  <MiniControlBtn
+                    onClick={(e) => { e.stopPropagation(); requestPictureInPicture(); }}
+                    label="PiP"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={pipActive ? colors.accent : '#FAFAF9'} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="3" width="20" height="14" rx="2" />
+                      <rect x="11" y="9" width="11" height="8" rx="1" />
+                    </svg>
+                  </MiniControlBtn>
+                )}
+
                 <MiniControlBtn
                   onClick={(e) => { e.stopPropagation(); endCall(); }}
                   danger
@@ -366,5 +463,6 @@ export default function CallOverlay() {
         </motion.div>
       )}
     </AnimatePresence>
+    </>
   );
 }

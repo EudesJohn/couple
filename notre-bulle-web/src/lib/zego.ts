@@ -41,6 +41,11 @@ class WebRTCManager {
   private isSpeakerOn: boolean = false;
   private offerSent: boolean = false;
 
+  // File d'attente ICE candidates : quand les candidats arrivent avant
+  // que setRemoteDescription soit appelé, on les stocke ici et on les
+  // rejoue après l'établissement de la session (évite InvalidStateError)
+  private pendingIceCandidates: RTCIceCandidateInit[] = [];
+
   // Promise pour synchroniser handleOffer avec startPublish.
   // Quand l'offre SDP arrive avant la fin de getUserMedia, handleOffer
   // attend cette promesse pour que l'answer SDP inclue les pistes audio/vidéo.
@@ -233,6 +238,8 @@ class WebRTCManager {
       await this.pc.setLocalDescription(answer);
       await this.limitVideoBitrate();
       await this.sendSignal('sdp-answer', { sdp: answer.sdp, type: answer.type });
+      // Rejouer les ICE candidates arrivés avant le setRemoteDescription
+      await this.flushPendingIceCandidates();
     } catch (err) {
       console.error('[WebRTC] Erreur handleOffer:', err);
     }
@@ -244,6 +251,8 @@ class WebRTCManager {
     if (this.pc.signalingState === 'stable') return;
     try {
       await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
+      // Rejouer les ICE candidates arrivés avant le setRemoteDescription
+      await this.flushPendingIceCandidates();
     } catch (err) {
       console.error('[WebRTC] Erreur handleAnswer:', err);
     }
@@ -251,10 +260,31 @@ class WebRTCManager {
 
   async handleIceCandidate(payload: any): Promise<void> {
     if (!this.pc || !payload.candidate) return;
+
+    // Si la description distante n'est pas encore définie, bufferiser
+    // le candidat pour le rejouer plus tard (évite InvalidStateError)
+    if (!this.pc.remoteDescription) {
+      this.pendingIceCandidates.push(payload);
+      return;
+    }
+
     try {
       await this.pc.addIceCandidate(new RTCIceCandidate(payload));
     } catch (err) {
       console.warn('[WebRTC] Erreur ajout ICE candidate:', err);
+    }
+  }
+
+  // Rejouer les ICE candidates mis en attente après setRemoteDescription
+  private async flushPendingIceCandidates(): Promise<void> {
+    while (this.pendingIceCandidates.length > 0) {
+      const candidate = this.pendingIceCandidates.shift()!;
+      if (!this.pc) break;
+      try {
+        await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.warn('[WebRTC] Erreur ICE candidate différé:', err);
+      }
     }
   }
 
@@ -327,6 +357,7 @@ class WebRTCManager {
     this.remoteStreamId = null;
     this.callId = '';
     this.offerSent = false;
+    this.pendingIceCandidates = [];
   }
 
   async stopPublish(): Promise<void> {
@@ -368,36 +399,58 @@ class WebRTCManager {
     if (!videoTrack) return false;
 
     // Déterminer le nouveau facingMode
-    const settings: any = videoTrack.getSettings();
+    // getSettings() peut ne pas retourner facingMode dans certains navigateurs → défaut 'user'
+    const settings = videoTrack.getSettings();
     const currentFacing = settings.facingMode || 'user';
     const newFacing = currentFacing === 'user' ? 'environment' : 'user';
 
     try {
-      // Arrêter l'ancienne piste vidéo
-      videoTrack.stop();
-
-      // Capturer la nouvelle caméra
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: newFacing,
-          width: { ideal: 480, max: 640 },
-          height: { ideal: 288, max: 480 },
-          frameRate: { ideal: 20, max: 24 },
-        },
-        audio: false,
-      });
+      // Étape 1 : capturer la nouvelle caméra AVANT d'arrêter l'ancienne.
+      // Certains navigateurs mobiles exigent { exact: newFacing } pour accéder à
+      // la caméra arrière. On essaie exact d'abord, avec fallback sur le mode simple.
+      let newStream: MediaStream;
+      try {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { exact: newFacing },
+            width: { ideal: 480, max: 640 },
+            height: { ideal: 288, max: 480 },
+            frameRate: { ideal: 20, max: 24 },
+          },
+          audio: false,
+        });
+      } catch {
+        // Fallback : sans 'exact', le navigateur interprète facingMode comme une
+        // préférence et non une contrainte stricte.
+        newStream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: newFacing,
+            width: { ideal: 480, max: 640 },
+            height: { ideal: 288, max: 480 },
+            frameRate: { ideal: 20, max: 24 },
+          },
+          audio: false,
+        });
+      }
 
       const newVideoTrack = newStream.getVideoTracks()[0];
       if (!newVideoTrack) return false;
 
-      // Remplacer la piste dans le RTCPeerConnection
+      // Étape 2 : remplacer la piste dans le RTCPeerConnection
       const sender = this.pc?.getSenders().find(s => s.track?.kind === 'video');
       if (sender) {
         await sender.replaceTrack(newVideoTrack);
+      } else {
+        // Aucun sender vidéo trouvé — ajouter la piste directement
+        this.pc?.addTrack(newVideoTrack, this.localStream);
       }
 
-      // Mettre à jour le flux local
+      // Étape 3 : remplacer l'ancienne piste dans le flux local
+      this.localStream.removeTrack(videoTrack);
       this.localStream.addTrack(newVideoTrack);
+
+      // Étape 4 : arrêter l'ancienne piste (après l'avoir retirée du stream)
+      videoTrack.stop();
 
       return true;
     } catch (err) {
@@ -493,7 +546,49 @@ export async function destroy(): Promise<void> {
   onRemoteStreamUpdate = null;
 }
 
-// Exports spécifiques Web (pour la partie CallScreen)
+// ==========================================================
+// Picture-in-Picture (PiP) — fenêtre flottante OS
+// L'élément vidéo PiP vit dans CallOverlay (persistant) et
+// est enregistré ici via setPipVideoElement.
+// ==========================================================
+let _pipVideoElement: HTMLVideoElement | null = null;
+
+export function setPipVideoElement(el: HTMLVideoElement | null): void {
+  _pipVideoElement = el;
+}
+
+/** Appelle requestPictureInPicture sur l'élément vidéo PiP.
+ *  Doit être appelé dans un gestionnaire d'événement utilisateur
+ *  (click, touch) pour respecter la contrainte navigateur. */
+export function requestPictureInPicture(): boolean {
+  const video = _pipVideoElement;
+  if (!video) return false;
+  if (document.pictureInPictureElement) return true; // déjà en PiP
+  try {
+    video.requestPictureInPicture().catch((err: any) =>
+      console.warn('[PiP] Erreur entrée PiP:', err)
+    );
+    return true;
+  } catch (err) {
+    console.warn('[PiP] Erreur entrée PiP:', err);
+    return false;
+  }
+}
+
+export function exitPictureInPicture(): void {
+  if (document.pictureInPictureElement) {
+    document.exitPictureInPicture().catch(() => {});
+  }
+}
+
+/** Vérifie si le navigateur supporte l'API Picture-in-Picture */
+export function isPiPSupported(): boolean {
+  return 'pictureInPictureEnabled' in document && document.pictureInPictureEnabled;
+}
+
+// ==========================================================
+// Accès aux flux WebRTC (pour CallScreen / CallOverlay)
+// ==========================================================
 export function getWebRTCStreams(): { local: MediaStream | null; remote: MediaStream | null; remoteStreamId: string | null } {
   if (!webRTCInstance) return { local: null, remote: null, remoteStreamId: null };
   return {

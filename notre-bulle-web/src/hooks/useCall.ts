@@ -189,6 +189,33 @@ function _teardownBeforeUnload(): void {
   window.removeEventListener('beforeunload', _handleBeforeUnload);
 }
 
+// Gestionnaire visibilitychange : quand l'utilisateur revient sur
+// l'app après l'avoir quittée, on ré-acquiert le WakeLock et on
+// resumé l'AudioContext si celui-ci a été suspendu par le navigateur.
+let _visibilityHandler: (() => void) | null = null;
+
+function _setupVisibilityHandler(): void {
+  if (_visibilityHandler) return;
+  _visibilityHandler = () => {
+    if (document.visibilityState === 'visible' && _store.callState === 'connected') {
+      // Ré-acquérir le WakeLock s'il a été relâché par l'OS
+      _requestWakeLock();
+      // Resumé l'AudioContext s'il a été suspendu par le navigateur
+      if (_bgAudioCtx?.state === 'suspended') {
+        _bgAudioCtx.resume().catch(() => {});
+      }
+    }
+  };
+  document.addEventListener('visibilitychange', _visibilityHandler);
+}
+
+function _teardownVisibilityHandler(): void {
+  if (_visibilityHandler) {
+    document.removeEventListener('visibilitychange', _visibilityHandler);
+    _visibilityHandler = null;
+  }
+}
+
 // =============================================================
 // HOOK PRINCIPAL
 // =============================================================
@@ -253,10 +280,12 @@ export function useCall(): UseCallReturn {
       _requestWakeLock();
       _startBackgroundKeepalive();
       _setupBeforeUnload();
+      _setupVisibilityHandler();
     } else {
       _releaseWakeLock();
       _stopBackgroundKeepalive();
       _teardownBeforeUnload();
+      _teardownVisibilityHandler();
     }
   }, [callState]);
 
