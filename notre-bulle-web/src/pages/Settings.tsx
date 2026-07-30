@@ -248,7 +248,7 @@ export default function SettingsScreen() {
       if (granted) {
         const notif = new Notification('Notre Bulle', {
           body: '🔔 Notification test — ça marche !',
-          icon: '/icon-192.jpg',
+          icon: '/icon-192.png',
         });
         setTimeout(() => notif.close(), 4000);
         showToast('Notification envoyée ✨');
