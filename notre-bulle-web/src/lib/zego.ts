@@ -398,59 +398,85 @@ class WebRTCManager {
     const videoTrack = this.localStream.getVideoTracks()[0];
     if (!videoTrack) return false;
 
-    // Déterminer le nouveau facingMode
-    // getSettings() peut ne pas retourner facingMode dans certains navigateurs → défaut 'user'
-    const settings = videoTrack.getSettings();
-    const currentFacing = settings.facingMode || 'user';
-    const newFacing = currentFacing === 'user' ? 'environment' : 'user';
-
     try {
-      // Étape 1 : capturer la nouvelle caméra AVANT d'arrêter l'ancienne.
-      // Certains navigateurs mobiles exigent { exact: newFacing } pour accéder à
-      // la caméra arrière. On essaie exact d'abord, avec fallback sur le mode simple.
-      let newStream: MediaStream;
-      try {
-        newStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { exact: newFacing },
-            width: { ideal: 480, max: 640 },
-            height: { ideal: 288, max: 480 },
-            frameRate: { ideal: 20, max: 24 },
-          },
-          audio: false,
-        });
-      } catch {
-        // Fallback : sans 'exact', le navigateur interprète facingMode comme une
-        // préférence et non une contrainte stricte.
-        newStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: newFacing,
-            width: { ideal: 480, max: 640 },
-            height: { ideal: 288, max: 480 },
-            frameRate: { ideal: 20, max: 24 },
-          },
-          audio: false,
-        });
+      // Étape 1 : énumérer les caméras disponibles — utiliser deviceId
+      // (plus fiable que facingMode qui n'est pas uniforme selon les navigateurs)
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      const cams = allDevices.filter(d => d.kind === 'videoinput');
+
+      // Étape 2 : trouver une caméra différente de l'actuelle
+      const curId = videoTrack.getSettings()?.deviceId;
+      let nextCam: MediaDeviceInfo | undefined;
+
+      if (curId && cams.length >= 2) {
+        nextCam = cams.find(d => d.deviceId !== curId);
+      } else if (cams.length >= 2) {
+        nextCam = cams[cams.length - 1];
       }
 
-      const newVideoTrack = newStream.getVideoTracks()[0];
-      if (!newVideoTrack) return false;
+      // Étape 3 : capturer la nouvelle caméra
+      //   Tentative 1 : avec l'ancienne caméra active (switch instantané)
+      //   Tentative 2 : si échec, libérer l'ancienne et réessayer
+      let newStream: MediaStream;
 
-      // Étape 2 : remplacer la piste dans le RTCPeerConnection
+      // Fonction helper pour getUserMedia (deviceId ou facingMode fallback)
+      const tryCapture = async (device: MediaDeviceInfo | undefined): Promise<MediaStream> => {
+        if (device) {
+          return navigator.mediaDevices.getUserMedia({
+            video: {
+              deviceId: { exact: device.deviceId },
+              width: { ideal: 480, max: 640 },
+              height: { ideal: 288, max: 480 },
+              frameRate: { ideal: 20, max: 24 },
+            },
+            audio: false,
+          });
+        }
+        // Fallback facingMode
+        const facing = videoTrack.getSettings()?.facingMode || 'user';
+        const nf = facing === 'user' ? 'environment' : 'user';
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { exact: nf }, width: { ideal: 480, max: 640 }, height: { ideal: 288, max: 480 }, frameRate: { ideal: 20, max: 24 } },
+            audio: false,
+          });
+        } catch {
+          return await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: nf, width: { ideal: 480, max: 640 }, height: { ideal: 288, max: 480 }, frameRate: { ideal: 20, max: 24 } },
+            audio: false,
+          });
+        }
+      };
+
+      try {
+        // Tentative 1 : ancienne caméra encore active (pas de coupure vidéo)
+        newStream = await tryCapture(nextCam);
+      } catch (_firstErr) {
+        // Échec → libérer l'ancienne caméra et réessayer
+        this.localStream.removeTrack(videoTrack);
+        videoTrack.stop();
+        newStream = await tryCapture(nextCam);
+      }
+
+      const newTrack = newStream.getVideoTracks()[0];
+      if (!newTrack) return false;
+
+      // Étape 4 : remplacer dans le RTCPeerConnection
       const sender = this.pc?.getSenders().find(s => s.track?.kind === 'video');
       if (sender) {
-        await sender.replaceTrack(newVideoTrack);
+        await sender.replaceTrack(newTrack);
       } else {
-        // Aucun sender vidéo trouvé — ajouter la piste directement
-        this.pc?.addTrack(newVideoTrack, this.localStream);
+        this.pc?.addTrack(newTrack, this.localStream);
       }
 
-      // Étape 3 : remplacer l'ancienne piste dans le flux local
-      this.localStream.removeTrack(videoTrack);
-      this.localStream.addTrack(newVideoTrack);
+      // Étape 5 : ajouter la nouvelle piste au flux local
+      this.localStream.addTrack(newTrack);
 
-      // Étape 4 : arrêter l'ancienne piste (après l'avoir retirée du stream)
-      videoTrack.stop();
+      // Étape 6 : arrêter l'ancienne piste si elle est toujours active
+      if (videoTrack.readyState !== 'ended') {
+        this.localStream.removeTrack(videoTrack);
+        videoTrack.stop();
+      }
 
       return true;
     } catch (err) {
