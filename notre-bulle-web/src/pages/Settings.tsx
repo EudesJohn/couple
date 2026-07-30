@@ -12,6 +12,7 @@ import { getTheme, saveTheme, saveBackgroundImage, removeBackgroundImage, getBac
 import { compressImage, downloadMedia } from '../lib/media';
 import { clearProfileCache } from '../lib/cache';
 import { getOwnProfileId } from '../lib/profile';
+import { requestNotificationPermission } from '../hooks/useNotifications';
 import {
   BackIcon, SettingsIcon, HeartFilledIcon, UserIcon, LockIcon,
   EditIcon, CameraIcon, CheckIcon, CloseIcon, ImageIcon,
@@ -101,6 +102,13 @@ export default function SettingsScreen() {
     title: string;
     message: string;
   }>({ type: 'info', title: '', message: '' });
+
+  // Notifications diagnostic
+  const [notifSupported, setNotifSupported] = useState<boolean | null>(null);
+  const [notifPermission, setNotifPermission] = useState<string>('checking…');
+  const [swActive, setSwActive] = useState<boolean | null>(null);
+  const [pushSubscribed, setPushSubscribed] = useState<boolean | null>(null);
+  const [testingNotif, setTestingNotif] = useState(false);
 
   const showAlert = useCallback((type: 'success' | 'error' | 'warning' | 'info', title: string, message: string) => {
     setAlertConfig({ type, title, message });
@@ -206,6 +214,52 @@ export default function SettingsScreen() {
       if (idx >= 0) setSelectedTheme(idx);
     })();
   }, []);
+
+  // Vérifier l'état des notifications au montage
+  useEffect(() => {
+    const supported = 'Notification' in window;
+    setNotifSupported(supported);
+    if (supported) {
+      setNotifPermission(Notification.permission);
+    }
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready.then(reg => {
+        setSwActive(!!reg.active);
+        return reg.pushManager.getSubscription();
+      }).then(sub => {
+        setPushSubscribed(!!sub);
+      }).catch(() => {
+        setSwActive(false);
+        setPushSubscribed(false);
+      });
+    } else {
+      setSwActive(false);
+      setPushSubscribed(false);
+    }
+  }, []);
+
+  // Tester une notification
+  const handleTestNotification = useCallback(async () => {
+    if (testingNotif) return;
+    setTestingNotif(true);
+    try {
+      const granted = await requestNotificationPermission();
+      if (granted) {
+        const notif = new Notification('Notre Bulle', {
+          body: '🔔 Notification test — ça marche !',
+          icon: '/icon-192.jpg',
+        });
+        setTimeout(() => notif.close(), 4000);
+        showToast('Notification envoyée ✨');
+      } else {
+        showAlert('warning', 'Permission refusée',
+          'Va dans les paramètres de ton téléphone → Applications → Notre Bulle → Notifications, et autorise-les.');
+      }
+    } catch {
+      showAlert('error', 'Erreur', 'Impossible de tester la notification');
+    } finally { setTestingNotif(false); }
+  }, [testingNotif, showToast, showAlert]);
 
   // Save display name
   const saveDisplayName = useCallback(async () => {
@@ -825,6 +879,73 @@ export default function SettingsScreen() {
 
         <div style={{ height: 40 }} />
       </div>
+
+      {/* --- Notifications --- */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ type: 'spring', damping: 14, stiffness: 120, delay: 0.30 }}
+        style={{
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.xl,
+          padding: spacing.xl,
+          boxShadow: `0 2px 10px ${colors.shadow}`,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.lg }}>
+          <span style={{ fontSize: 16 }}>🔔</span>
+          <span style={{ fontSize: 15, fontWeight: 600, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.6 }}>
+            Notifications
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 14, color: colors.text }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>API Notification</span>
+            <span style={{ fontWeight: 600, color: notifSupported ? colors.success : colors.error }}>
+              {notifSupported === null ? '…' : notifSupported ? '✅ Oui' : '❌ Non'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Permission</span>
+            <span style={{ fontWeight: 600, color: notifPermission === 'granted' ? colors.success : notifPermission === 'denied' ? colors.error : '#B8860B' }}>
+              {notifPermission === 'granted' ? '✅ Autorisée'
+                : notifPermission === 'denied' ? '❌ Refusée'
+                : notifPermission === 'checking…' ? '…'
+                : '⚠️ Non demandée'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Service Worker</span>
+            <span style={{ fontWeight: 600, color: swActive ? colors.success : colors.error }}>
+              {swActive === null ? '…' : swActive ? '✅ Actif' : '❌ Inactif'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Push abonné</span>
+            <span style={{ fontWeight: 600, color: pushSubscribed ? colors.success : colors.error }}>
+              {pushSubscribed === null ? '…' : pushSubscribed ? '✅ Oui' : '❌ Non'}
+            </span>
+          </div>
+        </div>
+
+        <motion.button
+          whileTap={{ scale: 0.95 }}
+          onClick={handleTestNotification}
+          disabled={testingNotif}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
+            marginTop: spacing.lg, width: '100%', padding: `${spacing.md}px 0`,
+            borderRadius: borderRadius.md, border: 'none', cursor: 'pointer',
+            backgroundColor: colors.primary, fontFamily: 'inherit',
+            opacity: testingNotif ? 0.5 : 1,
+          }}
+        >
+          <span style={{ color: '#FAFAF9', fontWeight: 600, fontSize: 14 }}>
+            {testingNotif ? 'Test en cours…' : '🔔 Tester une notification'}
+          </span>
+        </motion.button>
+      </motion.div>
 
       {/* Premium Alert */}
       <PremiumAlert

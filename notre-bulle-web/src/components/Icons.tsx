@@ -125,6 +125,7 @@ export const TypingIcon = ({ size = 24, color = colors.textTertiary }: IconProps
 );
 
 // Haut-parleur / Volume
+export const FlipCameraIcon = createIcon('M16 7h2a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4v-6a4 4 0 0 1 4-4h2 M12 4v4 M10 6l2-2 2 2 M12 16a2 2 0 1 0 0-4 2 2 0 0 0 0 4z M22 11l-4 4-4-4');
 export const VolumeIcon = createIcon('M11 5L6 9H2v6h4l5 4V5z M19.07 4.93a10 10 0 0 1 0 14.14 M15.54 8.46a5 5 0 0 1 0 7.07');
 
 // Microphone coupé

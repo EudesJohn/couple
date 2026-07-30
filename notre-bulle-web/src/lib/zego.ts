@@ -362,6 +362,50 @@ class WebRTCManager {
     }
   }
 
+  async switchCamera(): Promise<boolean> {
+    if (!this.localStream) return false;
+    const videoTrack = this.localStream.getVideoTracks()[0];
+    if (!videoTrack) return false;
+
+    // Déterminer le nouveau facingMode
+    const settings: any = videoTrack.getSettings();
+    const currentFacing = settings.facingMode || 'user';
+    const newFacing = currentFacing === 'user' ? 'environment' : 'user';
+
+    try {
+      // Arrêter l'ancienne piste vidéo
+      videoTrack.stop();
+
+      // Capturer la nouvelle caméra
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: newFacing,
+          width: { ideal: 480, max: 640 },
+          height: { ideal: 288, max: 480 },
+          frameRate: { ideal: 20, max: 24 },
+        },
+        audio: false,
+      });
+
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      if (!newVideoTrack) return false;
+
+      // Remplacer la piste dans le RTCPeerConnection
+      const sender = this.pc?.getSenders().find(s => s.track?.kind === 'video');
+      if (sender) {
+        await sender.replaceTrack(newVideoTrack);
+      }
+
+      // Mettre à jour le flux local
+      this.localStream.addTrack(newVideoTrack);
+
+      return true;
+    } catch (err) {
+      console.warn('[WebRTC] Échec basculement caméra:', err);
+      return false;
+    }
+  }
+
   getLocalStream(): MediaStream | null { return this.localStream; }
   getRemoteStream(): MediaStream | null { return this.remoteStream; }
   getRemoteStreamId(): string | null { return this.remoteStreamId; }
@@ -437,6 +481,10 @@ export async function toggleSpeaker(enabled: boolean): Promise<void> {
 
 export async function muteMicrophone(muted: boolean): Promise<void> {
   return getWebRTC().muteMicrophone(muted);
+}
+
+export async function switchCamera(): Promise<boolean> {
+  return getWebRTC().switchCamera();
 }
 
 export async function destroy(): Promise<void> {

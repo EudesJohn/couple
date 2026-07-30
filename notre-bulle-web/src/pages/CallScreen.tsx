@@ -1,16 +1,19 @@
 // ============================================================
 // Appel premium — Audio / Vidéo (WebRTC)
 // Design Burgundy & Gold, animations Framer Motion
+//
+// Vidéo : swap local/distant (comme WhatsApp)
+// PiP local tappable, caméra avant/arrière
 // ============================================================
 import { useRef, useCallback, useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getWebRTCStreams, setOnRemoteStreamReady } from '../lib/zego';
 import { colors, borderRadius } from '../constants/theme';
 import { useCall } from '../hooks/useCall';
 import {
   HeartFilledIcon, UserIcon, MicIcon, MicOffIcon,
-  VolumeIcon, PhoneOffIcon, VideoIcon,
+  VolumeIcon, PhoneOffIcon, FlipCameraIcon,
 } from '../components/Icons';
 
 // ==========================================
@@ -132,12 +135,89 @@ function formatDuration(seconds: number): string {
 }
 
 // ==========================================
+// COMPOSANT PiP — carré vidéo en incrustation
+// ==========================================
+function PiPVideo({
+  videoRef,
+  stream,
+  size,
+  position,
+  onClick,
+  label,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  stream: MediaStream | null;
+  size: { width: number; height: number };
+  position: React.CSSProperties;
+  onClick?: () => void;
+  label: string;
+}) {
+  const hasStream = !!stream;
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        position: 'absolute',
+        ...position,
+        width: size.width,
+        height: size.height,
+        borderRadius: size.width > 100 ? 16 : 12,
+        overflow: 'hidden',
+        border: `2px solid rgba(255,255,255,0.2)`,
+        boxShadow: size.width > 100
+          ? '0 0 20px rgba(0,0,0,0.5)'
+          : '0 8px 16px rgba(0,0,0,0.4)',
+        cursor: onClick ? 'pointer' : 'default',
+        zIndex: size.width > 100 ? 5 : 10,
+        transition: 'all 0.3s ease',
+      }}
+    >
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted={label === 'Vous'}
+        style={{
+          width: '100%', height: '100%', objectFit: 'cover',
+          opacity: hasStream ? 1 : 0,
+          transition: 'opacity 0.3s ease',
+          transform: 'scaleX(-1)',
+        }}
+      />
+      {!hasStream && (
+        <div style={{
+          position: 'absolute', inset: 0,
+          display: 'flex', justifyContent: 'center', alignItems: 'center',
+          backgroundColor: '#2D1B36',
+        }}>
+          <UserIcon size={size.width > 100 ? 40 : 20} color="rgba(255,255,255,0.4)" />
+        </div>
+      )}
+
+      {/* Label en bas */}
+      <div style={{
+        position: 'absolute', bottom: 4, left: 4, right: 4,
+        textAlign: 'center',
+        fontSize: 9,
+        fontWeight: 600,
+        color: 'rgba(255,255,255,0.7)',
+        textShadow: '0 1px 3px rgba(0,0,0,0.5)',
+        pointerEvents: 'none',
+      }}>
+        {label}
+      </div>
+    </div>
+  );
+}
+
+// ==========================================
 // ÉCRAN PRINCIPAL
 // ==========================================
 export default function CallScreen() {
   const [searchParams] = useSearchParams();
   const role = searchParams.get('role') || 'caller';
   const routeType = searchParams.get('type') || 'audio';
+  const navigate = useNavigate();
 
   // Web: refs pour éléments vidéo
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -145,20 +225,20 @@ export default function CallScreen() {
 
   const {
     callState, callType, callDuration, isMuted, isSpeakerOn,
-    toggleMute, toggleSpeakerFn, endCall,
+    toggleMute, toggleSpeakerFn, endCall, switchCamera,
   } = useCall();
 
   const [webRTCStreams, setWebRTCStreams] = useState<{ local: MediaStream | null; remote: MediaStream | null }>({ local: null, remote: null });
 
-  // Web: callback immédiat quand le flux distant arrive (évite le polling 500ms
-  // qui cause des sauts d'image sur mobile — le flux est attaché dès l'événement ontrack)
+  // État de swap vidéo : qui est en plein écran ?
+  const [videoFocused, setVideoFocused] = useState<'remote' | 'local'>('remote');
+
+  // Web: callback immédiat quand le flux distant arrive
   useEffect(() => {
     setOnRemoteStreamReady((stream) => {
-      // Attacher immédiatement le flux à l'élément DOM
       if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== stream) {
         remoteVideoRef.current.srcObject = stream;
       }
-      // Mettre à jour l'état React pour le rendu
       setWebRTCStreams((prev) => {
         if (prev.remote === stream) return prev;
         return { ...prev, remote: stream };
@@ -167,8 +247,7 @@ export default function CallScreen() {
     return () => setOnRemoteStreamReady(null);
   }, []);
 
-  // Web: fallback polling basse fréquence pour le cas où le flux existe déjà
-  // au moment du montage du composant (rate limiter évite les reassignations intempestives)
+  // Web: fallback polling basse fréquence
   useEffect(() => {
     let lastLocal: MediaStream | null = null;
     let lastRemote: MediaStream | null = null;
@@ -177,7 +256,6 @@ export default function CallScreen() {
     const interval = setInterval(() => {
       const streams = getWebRTCStreams();
 
-      // Rattrapage si le flux distant n'a pas encore été attaché par le callback
       if (remoteVideoRef.current && streams.remote && remoteVideoRef.current.srcObject !== streams.remote) {
         remoteVideoRef.current.srcObject = streams.remote;
       }
@@ -185,7 +263,6 @@ export default function CallScreen() {
         localVideoRef.current.srcObject = streams.local;
       }
 
-      // Mise à jour de l'état React seulement si changement effectif
       if (streams.local !== lastLocal || streams.remote !== lastRemote) {
         lastLocal = streams.local;
         lastRemote = streams.remote;
@@ -193,10 +270,7 @@ export default function CallScreen() {
         idleTicks = 0;
       } else {
         idleTicks++;
-        // Arrêter le polling après 30 ticks sans changement (30s)
-        if (idleTicks > 60) {
-          clearInterval(interval);
-        }
+        if (idleTicks > 60) clearInterval(interval);
       }
     }, 500);
     return () => clearInterval(interval);
@@ -228,6 +302,13 @@ export default function CallScreen() {
   const statusColor = statusColors[callState] || colors.textSecondary;
   const statusText = statusTexts[callState] || '';
 
+  // Déterminer quel flux est plein écran et quel flux est en PiP
+  const fullscreenVideoRef = videoFocused === 'remote' ? remoteVideoRef : localVideoRef;
+  const fullscreenStream = videoFocused === 'remote' ? webRTCStreams.remote : webRTCStreams.local;
+  const pipVideoRef = videoFocused === 'remote' ? localVideoRef : remoteVideoRef;
+  const pipStream = videoFocused === 'remote' ? webRTCStreams.local : webRTCStreams.remote;
+  const pipLabel = videoFocused === 'remote' ? 'Vous' : 'Partenaire';
+
   return (
     <div style={{
       height: '100vh',
@@ -237,26 +318,44 @@ export default function CallScreen() {
       display: 'flex',
       flexDirection: 'column',
     }}>
+      {/* Bouton minimiser */}
+      <button
+        onClick={() => navigate(-1)}
+        aria-label="Minimiser"
+        style={{
+          position: 'absolute', top: 16, left: 16, zIndex: 20,
+          width: 40, height: 40, borderRadius: 20,
+          backgroundColor: 'rgba(0,0,0,0.4)',
+          backdropFilter: 'blur(4px)',
+          WebkitBackdropFilter: 'blur(4px)',
+          border: '1px solid rgba(255,255,255,0.15)',
+          cursor: 'pointer',
+          display: 'flex', justifyContent: 'center', alignItems: 'center',
+        }}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FAFAF9" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+
       {/* Fond vidéo */}
       <div style={{ position: 'absolute', inset: 0 }}>
         {isVideo && (
-          <div style={{ position: 'absolute', inset: 0 }}>
-            {/* Vidéo distante — toujours montée pour éviter le saut d'image */}
-            {/* scaleX(-1) corrige le miroir de la caméra frontale pour que
-                l'autre personne soit vue à l'endroit (même principe que le PiP local) */}
+          <>
+            {/* Piste en plein écran */}
             <video
-              ref={remoteVideoRef}
+              ref={fullscreenVideoRef as React.RefObject<HTMLVideoElement>}
               autoPlay
               playsInline
+              muted={videoFocused === 'local'}
               style={{
                 width: '100%', height: '100%', objectFit: 'cover',
-                opacity: isConnected && webRTCStreams.remote ? 1 : 0,
+                opacity: isConnected && fullscreenStream ? 1 : 0,
                 transition: 'opacity 0.3s ease',
                 transform: 'scaleX(-1)',
               }}
             />
-            {/* Placeholder superposé tant que le flux n'est pas prêt */}
-            {(!isConnected || !webRTCStreams.remote) && (
+            {(!isConnected || !fullscreenStream) && (
               <div style={{
                 position: 'absolute', inset: 0,
                 display: 'flex', justifyContent: 'center', alignItems: 'center',
@@ -265,49 +364,50 @@ export default function CallScreen() {
                 <HeartFilledIcon size={80} color={colors.accent} />
               </div>
             )}
-          </div>
+
+            {/* PiP (incrustation) — tappable pour swap */}
+            <PiPVideo
+              videoRef={pipVideoRef as React.RefObject<HTMLVideoElement>}
+              stream={pipStream}
+              size={
+                videoFocused === 'remote'
+                  ? { width: 120, height: 180 }
+                  : { width: 120, height: 180 }
+              }
+              position={
+                videoFocused === 'remote'
+                  ? { top: 60, right: 16 }
+                  : { top: 60, right: 16 }
+              }
+              onClick={() => setVideoFocused(v => v === 'remote' ? 'local' : 'remote')}
+              label={pipLabel}
+            />
+
+            {/* Indicateur swap */}
+            {isConnected && (
+              <div style={{
+                position: 'absolute', bottom: 100, left: 0, right: 0,
+                display: 'flex', justifyContent: 'center', zIndex: 11,
+              }}>
+                <span style={{
+                  fontSize: 11, color: 'rgba(255,255,255,0.3)',
+                  backgroundColor: 'rgba(0,0,0,0.3)',
+                  padding: '2px 10px', borderRadius: 10,
+                }}>
+                  Tapez la vignette pour inverser
+                </span>
+              </div>
+            )}
+          </>
         )}
         {isVideo && !isConnected && (
           <div style={{ position: 'absolute', inset: 0, backgroundColor: 'rgba(0,0,0,0.3)' }} />
-        )}
-
-        {/* PiP local — vidéo toujours montée */}
-        {isVideo && (
-          <div style={{
-            position: 'absolute', top: 60, right: 16,
-            width: 120, height: 180, borderRadius: 16, overflow: 'hidden',
-            border: `2px solid rgba(255,255,255,0.2)`,
-            boxShadow: '0 8px 16px rgba(0,0,0,0.4)',
-          }}>
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              style={{
-                width: '100%', height: '100%', objectFit: 'cover',
-                opacity: isConnected && webRTCStreams.local ? 1 : 0,
-                transition: 'opacity 0.3s ease',
-                transform: 'scaleX(-1)', // Miroir : gauche→gauche, droite→droite
-              }}
-            />
-            {(!isConnected || !webRTCStreams.local) && (
-              <div style={{
-                position: 'absolute', inset: 0,
-                display: 'flex', justifyContent: 'center', alignItems: 'center',
-                backgroundColor: '#2D1B36',
-              }}>
-                <UserIcon size={28} color="rgba(255,255,255,0.4)" />
-              </div>
-            )}
-          </div>
         )}
       </div>
 
       {/* APPEL AUDIO */}
       {!isVideo && (
         <>
-          {/* Élément audio caché pour jouer le flux distant */}
           <audio ref={remoteVideoRef} autoPlay playsInline style={{ display: 'none' }} />
           <motion.div
             initial={{ opacity: 0, y: 30 }}
@@ -361,28 +461,6 @@ export default function CallScreen() {
         </div>
       )}
 
-      {/* OVERLAY APPEL EN COURS */}
-      <AnimatePresence>
-        {isCalling && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.4 }}
-            style={{
-              position: 'absolute', top: 0, left: 0, right: 0,
-              display: 'flex', justifyContent: 'center',
-              paddingTop: 'calc(60px + env(safe-area-inset-top, 0px))',
-              zIndex: 2,
-            }}
-          >
-            <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.7)' }}>
-              {role === 'caller' ? 'Appel en cours…' : 'Appel entrant…'}
-            </span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* CONTRÔLES */}
       <motion.div
         initial={{ opacity: 0, y: 30 }}
@@ -416,8 +494,8 @@ export default function CallScreen() {
           </div>
 
           {isVideo && (
-            <ControlBtn onPress={() => {}} active label="Vidéo">
-              <VideoIcon size={20} color={colors.accent} />
+            <ControlBtn onPress={switchCamera} label="Caméra">
+              <FlipCameraIcon size={20} color="#FAFAF9" />
             </ControlBtn>
           )}
         </div>

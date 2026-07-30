@@ -24,6 +24,15 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 }
 
 // ==========================================
+// VERROU GLOBAL — évite les appels concurrents à pushManager.subscribe()
+// qui causent des AbortError quand plusieurs composants appellent
+// requestNotificationPermission() en même temps (App + LockScreen + Chat)
+// ==========================================
+let pushRegisterPromise: Promise<boolean> | null = null;
+let lastPushRegisterAttempt = 0;
+const PUSH_REGISTER_COOLDOWN_MS = 15_000;
+
+// ==========================================
 // API BASE — point d'entrée vers le backend
 // ==========================================
 function apiBase(): string {
@@ -39,6 +48,26 @@ function apiBase(): string {
 // INSCRIPTION AU PUSH (abonnement du navigateur)
 // ==========================================
 async function registerPushSubscription(): Promise<boolean> {
+  // === DEDUP : si déjà en cours, retourner la même promesse ===
+  if (pushRegisterPromise) return pushRegisterPromise;
+
+  // === COOLDOWN : éviter les retry loops ===
+  const now = Date.now();
+  if (now - lastPushRegisterAttempt < PUSH_REGISTER_COOLDOWN_MS) {
+    return false;
+  }
+  lastPushRegisterAttempt = now;
+
+  pushRegisterPromise = _registerPushInner();
+
+  try {
+    return await pushRegisterPromise;
+  } finally {
+    pushRegisterPromise = null;
+  }
+}
+
+async function _registerPushInner(): Promise<boolean> {
   try {
     // Vérifier que le service worker est actif
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -57,20 +86,79 @@ async function registerPushSubscription(): Promise<boolean> {
       return false;
     }
 
-    const registration = await navigator.serviceWorker.ready;
+    // === DIAGNOSTIC : Vérifier l'état du Service Worker ===
+    const swRegistrations = await navigator.serviceWorker.getRegistrations();
+    if (swRegistrations.length === 0) {
+      console.warn('Aucun service worker enregistré — push impossible');
+      return false;
+    }
 
-    // Vérifier si déjà abonné, sinon s'abonner
-    let subscription = await registration.pushManager.getSubscription();
-    if (!subscription) {
-      const applicationServerKey = urlBase64ToUint8Array(config.vapidPublicKey);
+    const registration = await navigator.serviceWorker.ready;
+    if (!registration.active) {
+      console.warn('Service worker pas encore actif — push impossible');
+      return false;
+    }
+
+    // === DIAGNOSTIC : Vérifier la connectivité Push ===
+    if (!registration.pushManager) {
+      console.warn('PushManager non disponible sur cette registration SW');
+      return false;
+    }
+
+    // Tester la connectivité push service (sans s'abonner)
+    // Certains environnements (VPN, proxy, entreprise) bloquent FCM
+    try {
+      // Vérifier qu'on peut atteindre le push service en testant l'abonnement existant
+      const testSub = await registration.pushManager.getSubscription();
+      if (testSub) {
+        const subInfo = testSub.toJSON();
+        if (subInfo.endpoint && subInfo.keys?.p256dh && subInfo.keys?.auth) {
+          // Subscription existante valide → sync
+          return await _syncSubscription(profileId, testSub);
+        }
+        // Subscription invalide → la supprimer
+        await testSub.unsubscribe();
+      }
+    } catch {
+      // Si getSubscription échoue, le push service est injoignable
+      console.warn('Push service injoignable sur ce réseau — push désactivé');
+      return false;
+    }
+
+    const applicationServerKey = urlBase64ToUint8Array(config.vapidPublicKey);
+
+    // === ABONNEMENT avec une seule tentative ===
+    // Si AbortError → push service FCM injoignable (VPN, proxy, pays bloqué)
+    // Inutile de retenter — ça ne marchera pas tant que le réseau n'aura pas changé
+    let subscription: PushSubscription;
+    try {
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: applicationServerKey as any,
       });
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Push service injoignable (FCM bloqué, VPN, proxy, etc.)
+        // Pas de retry — ça ne ferait que polluer la console
+        console.warn('Push service injoignable — notifications push désactivées sur ce réseau');
+      } else {
+        console.warn('Erreur push subscribe:', err);
+      }
+      return false;
     }
 
-    // Toujours envoyer l'abonnement au backend (même s'il existe déjà côté navigateur)
-    // Ceci garanti que le serveur a toujours la dernière signature du téléphone
+    // Synchroniser avec le backend
+    return await _syncSubscription(profileId, subscription);
+
+  } catch (err) {
+    console.warn('Erreur registerPushSubscription:', err);
+    return false;
+  }
+}
+
+// Envoyer / mettre à jour l'abonnement push côté serveur
+async function _syncSubscription(profileId: string, subscription: PushSubscription): Promise<boolean> {
+  try {
     const subData = subscription.toJSON();
     const response = await fetch(`${apiBase()}/push/subscribe`, {
       method: 'POST',
@@ -91,7 +179,7 @@ async function registerPushSubscription(): Promise<boolean> {
     console.log('✅ Push subscription synchronisée avec le serveur');
     return true;
   } catch (err) {
-    console.warn('Erreur registerPushSubscription:', err);
+    console.warn('Erreur sync push subscription:', err);
     return false;
   }
 }

@@ -13,6 +13,7 @@ from statistics import median, stdev
 from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from urllib.parse import quote
 import httpx
 
 # ============================================================
@@ -325,13 +326,13 @@ async def store_subscription(profile_id: str, endpoint: str, p256dh_key: str, au
 
     async with httpx.AsyncClient() as client:
         # Vérifier si une subscription existe déjà pour ce profile + endpoint
-        check_url = f"{url}?profile_id=eq.{profile_id}&endpoint=eq.{httpx.utils.quote(endpoint, safe='')}"
+        check_url = f"{url}?profile_id=eq.{profile_id}&endpoint=eq.{quote(endpoint, safe='')}"
         check_resp = await client.get(check_url, headers=headers)
 
         if check_resp.status_code == 200 and check_resp.json():
             # Mise à jour
             patch_resp = await client.patch(
-                f"{url}?profile_id=eq.{profile_id}&endpoint=eq.{httpx.utils.quote(endpoint, safe='')}",
+                f"{url}?profile_id=eq.{profile_id}&endpoint=eq.{quote(endpoint, safe='')}",
                 headers=headers,
                 json=data,
             )
@@ -364,7 +365,7 @@ async def delete_subscription(profile_id: str, endpoint: str) -> bool:
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return False
 
-    url = f"{SUPABASE_URL}/rest/v1/push_subscriptions?profile_id=eq.{profile_id}&endpoint=eq.{httpx.utils.quote(endpoint, safe='')}"
+    url = f"{SUPABASE_URL}/rest/v1/push_subscriptions?profile_id=eq.{profile_id}&endpoint=eq.{quote(endpoint, safe='')}"
     headers = get_supabase_headers()
 
     async with httpx.AsyncClient() as client:
@@ -377,7 +378,7 @@ async def get_conversation_recipient(conv_id: str, sender_id: str) -> Optional[s
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
 
-    url = f"{SUPABASE_URL}/rest/v1/conversation_members?conversation_id=eq.{httpx.utils.quote(conv_id)}&select=profile_id"
+    url = f"{SUPABASE_URL}/rest/v1/conversation_members?conversation_id=eq.{quote(conv_id)}&select=profile_id"
     headers = get_supabase_headers()
 
     async with httpx.AsyncClient() as client:
@@ -400,7 +401,7 @@ async def get_sender_profile(profile_id: str) -> Optional[Dict[str, Any]]:
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         return None
 
-    url = f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{httpx.utils.quote(profile_id)}&select=id,display_name"
+    url = f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{quote(profile_id)}&select=id,display_name"
     headers = get_supabase_headers()
 
     async with httpx.AsyncClient() as client:

@@ -2,9 +2,10 @@
 // Hook — Appels audio/vidéo entre 2 personnes
 // Signaling : Supabase Realtime + WebRTC
 //
-// Deux instances du hook coexistent :
-// - ChatLayout : détecte les appels entrants (INSERT Realtime)
-// - CallScreen : initie WebRTC depuis l'URL (callId, role, type)
+// L'état des appels est partagé entre toutes les instances du hook
+// (ChatLayout, CallScreen, CallOverlay) via un store module-level.
+// Ainsi, le démontage/remontage de CallScreen (minimisation) ne
+// perd pas l'état de l'appel.
 // ============================================================
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -15,7 +16,7 @@ import {
   toggleSpeaker, muteMicrophone,
   startPlayingStream, stopPlayingStream, setOnRemoteStreamUpdate,
   setOnConnectionStateChange,
-  createOffer,
+  createOffer, switchCamera as switchCameraZego,
 } from '../lib/zego';
 import type { Call, CallType } from '../types/database';
 import { notifyIncomingCall, notifyMissedCall } from './useNotifications';
@@ -27,12 +28,77 @@ let callChannelMountId = 0;
 
 type CallStateType = 'idle' | 'calling' | 'ringing' | 'connecting' | 'connected' | 'ended';
 
+// =============================================================
+// STORE MODULE-LEVEL — partagé entre toutes les instances
+// =============================================================
+type CallStore = {
+  callState: CallStateType;
+  callType: CallType;
+  callDuration: number;
+  isSpeakerOn: boolean;
+  isMuted: boolean;
+  incomingCall: Call | null;
+};
+
+const _store: CallStore = {
+  callState: 'idle',
+  callType: 'audio',
+  callDuration: 0,
+  isSpeakerOn: false,
+  isMuted: false,
+  incomingCall: null,
+};
+const _storeListeners = new Set<() => void>();
+
+function _updateStore(updates: Partial<CallStore>): void {
+  Object.assign(_store, updates);
+  _storeListeners.forEach(fn => fn());
+}
+
+function _useStore(): CallStore {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const listener = () => setTick(t => t + 1);
+    _storeListeners.add(listener);
+    return () => { _storeListeners.delete(listener); };
+  }, []);
+  return _store;
+}
+
+// =============================================================
+// TIMER MODULE-LEVEL — un seul timer pour toutes les instances
+// =============================================================
+let _callTimer: ReturnType<typeof setInterval> | null = null;
+
+function _startSharedTimer(): void {
+  if (_callTimer) return; // déjà en cours
+  _updateStore({ callDuration: 0 });
+  _callTimer = setInterval(() => {
+    _updateStore({ callDuration: _store.callDuration + 1 });
+  }, 1000);
+}
+
+function _stopSharedTimer(): void {
+  if (_callTimer) {
+    clearInterval(_callTimer);
+    _callTimer = null;
+  }
+}
+
 // Garde-fou module-level : les deux instances (ChatLayout / CallScreen) reçoivent les
 // mêmes événements Realtime. On garde un traceur pour la connexion WebRTC mais on ne
 // bloque pas : les opérations dans zego.ts sont idempotentes (joinRoom, startPublish,
 // createOffer avec flag offerSent), donc les deux instances peuvent appeler initZegoCall
 // sans risque de double initialisation.
 let _zegoInitializedCallId: string | null = null;
+
+// Flag : l'appel a déjà été connecté (pour wasAnswered dans endCall,
+// même si WebRTC s'est déconnecté entre-temps)
+let _wasEverConnected = false;
+
+// Timer de grâce pour 'disconnected' — WebRTC peut se reconnecter
+// après une coupure réseau temporaire (contrairement à 'failed')
+let _disconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Événement module-level pour synchroniser l'état 'connected' entre toutes les instances
 // de useCall (ChatLayout + CallScreen). Une seule instance initie WebRTC (via le garde-fou
@@ -50,7 +116,83 @@ function emitCallConnected(): void {
   _connectedListeners.forEach(cb => cb());
 }
 
-interface UseCallReturn {
+// =============================================================
+// WAKE LOCK — maintient l'écran éveillé pendant l'appel
+// =============================================================
+let _wakeLock: any = null;
+
+async function _requestWakeLock(): Promise<void> {
+  if ('wakeLock' in navigator && _store.callState === 'connected') {
+    try {
+      _wakeLock = await (navigator as any).wakeLock.request('screen');
+      _wakeLock.addEventListener('release', () => { _wakeLock = null; });
+    } catch {
+      _wakeLock = null;
+    }
+  }
+}
+
+function _releaseWakeLock(): void {
+  if (_wakeLock) {
+    _wakeLock.release().catch(() => {});
+    _wakeLock = null;
+  }
+}
+
+// =============================================================
+// BACKGROUND KEEPALIVE — empêche la suspension du navigateur
+// quand l'appel est actif et que l'utilisateur quitte l'app
+// (PWA / changement d'onglet / mise en arrière-plan)
+// =============================================================
+
+// AudioContext silencieux : technique standard pour signaler au
+// navigateur que la page utilise l'audio, ce qui réduit les
+// chances de suspension en arrière-plan (Chrome suspend moins
+// les pages qui produisent du son, même quasi-silencieux).
+let _bgAudioCtx: AudioContext | null = null;
+
+function _startBackgroundKeepalive(): void {
+  if (_bgAudioCtx) return;
+  try {
+    _bgAudioCtx = new AudioContext();
+    const osc = _bgAudioCtx.createOscillator();
+    const gain = _bgAudioCtx.createGain();
+    gain.gain.value = 0.001; // quasi-silencieux
+    osc.connect(gain).connect(_bgAudioCtx.destination);
+    osc.start();
+  } catch {
+    _bgAudioCtx = null;
+  }
+}
+
+function _stopBackgroundKeepalive(): void {
+  if (_bgAudioCtx) {
+    _bgAudioCtx.close().catch(() => {});
+    _bgAudioCtx = null;
+  }
+}
+
+// Gestionnaire beforeunload : prévient l'utilisateur avant de
+// fermer l'onglet/app PWA pendant un appel actif
+function _handleBeforeUnload(e: BeforeUnloadEvent): void {
+  if (_store.callState === 'connected') {
+    e.preventDefault();
+    e.returnValue = ''; // Chrome nécessite un returnValue non vide
+  }
+}
+
+function _setupBeforeUnload(): void {
+  window.addEventListener('beforeunload', _handleBeforeUnload);
+}
+
+function _teardownBeforeUnload(): void {
+  window.removeEventListener('beforeunload', _handleBeforeUnload);
+}
+
+// =============================================================
+// HOOK PRINCIPAL
+// =============================================================
+export interface UseCallReturn {
   callState: CallStateType;
   callType: CallType;
   callDuration: number;
@@ -63,22 +205,23 @@ interface UseCallReturn {
   endCall: () => Promise<void>;
   toggleMute: () => Promise<void>;
   toggleSpeakerFn: () => Promise<void>;
+  switchCamera: () => Promise<boolean>;
   resetCall: () => void;
 }
 
 export function useCall(): UseCallReturn {
   const navigate = useNavigate();
-  const [callState, setCallState] = useState<CallStateType>('idle');
-  const [callType, setCallType] = useState<CallType>('audio');
-  const [callDuration, setCallDuration] = useState(0);
-  const [isSpeakerOn, setIsSpeakerOn] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [incomingCall, setIncomingCall] = useState<Call | null>(null);
+  const shared = _useStore();
+  const callState = shared.callState;
+  const callType = shared.callType;
+  const callDuration = shared.callDuration;
+  const isSpeakerOn = shared.isSpeakerOn;
+  const isMuted = shared.isMuted;
+  const incomingCall = shared.incomingCall;
 
   const profileRef = useRef<{ id: string; name: string } | null>(null);
   const partnerRef = useRef<{ id: string; name: string } | null>(null);
   const currentCallIdRef = useRef<string | null>(null);
-  const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const remoteStreamIdRef = useRef<string | null>(null);
   const callStateRef = useRef<CallStateType>(callState);
   callStateRef.current = callState;
@@ -103,21 +246,19 @@ export function useCall(): UseCallReturn {
     loadProfiles();
   }, []);
 
-  // ─── Timer ───
-  const startCallTimer = useCallback(() => {
-    setCallDuration(0);
-    if (callTimerRef.current) return; // déjà un timer en cours (évite le double appel)
-    callTimerRef.current = setInterval(() => setCallDuration((p) => p + 1), 1000);
-  }, []);
-
-  const stopCallTimer = useCallback(() => {
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current);
-      callTimerRef.current = null;
+  // ─── Wake Lock + Background Keepalive : garder l'écran et
+  //       l'appel actifs même en arrière-plan PWA ───
+  useEffect(() => {
+    if (callState === 'connected') {
+      _requestWakeLock();
+      _startBackgroundKeepalive();
+      _setupBeforeUnload();
+    } else {
+      _releaseWakeLock();
+      _stopBackgroundKeepalive();
+      _teardownBeforeUnload();
     }
-  }, []);
-
-  useEffect(() => () => stopCallTimer(), [stopCallTimer]);
+  }, [callState]);
 
   // ─── Init WebRTC (partagé entre caller et callee) ───
   const initZegoCall = useCallback(async (callId: string, type: CallType, isOfferer: boolean) => {
@@ -144,9 +285,28 @@ export function useCall(): UseCallReturn {
     // pour que la 2e instance (p. ex. CallScreen après ChatLayout) ait
     // ses propres handlers de connexion et de flux distant.
     setOnConnectionStateChange((state) => {
-      if (state === 'disconnected' || state === 'failed') {
-        setCallState('ended');
-        setTimeout(() => setCallState('idle'), 2000);
+      // 'disconnected' est temporaire — WebRTC peut se reconnecter
+      // (réseau mobile instable, transition WiFi/4G, etc.)
+      // On donne 5s de grâce avant de considérer l'appel comme terminé.
+      // 'failed' = irrécupérable → on coupe immédiatement.
+      if (state === 'failed') {
+        if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
+        _updateStore({ callState: 'ended' });
+        setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
+      } else if (state === 'disconnected') {
+        if (_disconnectTimer) return; // déjà un timer en cours
+        _disconnectTimer = setTimeout(() => {
+          _disconnectTimer = null;
+          // Après 5s sans reconnexion, on termine l'appel
+          _updateStore({ callState: 'ended' });
+          setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
+        }, 5000);
+      } else if (state === 'connected') {
+        // Reconnexion réussie → annuler le timer de grâce
+        if (_disconnectTimer) {
+          clearTimeout(_disconnectTimer);
+          _disconnectTimer = null;
+        }
       }
     });
 
@@ -175,14 +335,15 @@ export function useCall(): UseCallReturn {
           await createOffer();
         }
 
-        setCallState('connected');
+        _updateStore({ callState: 'connected' });
+        _wasEverConnected = true;
         emitCallConnected();
-        startCallTimer();
+        _startSharedTimer();
       } catch (err) {
         console.error('Erreur WebRTC:', err);
         _zegoInitializedCallId = null; // permet une tentative ultérieure
-        setCallState('ended');
-        setTimeout(() => setCallState('idle'), 2000);
+        _updateStore({ callState: 'ended' });
+        setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
       }
     } else {
       // Déjà initialisé par une autre instance (p. ex. ChatLayout a pris le
@@ -198,11 +359,11 @@ export function useCall(): UseCallReturn {
 
       // Synchroniser l'état de tous les useCall
       if (callStateRef.current === 'connecting' || callStateRef.current === 'calling') {
-        setCallState('connected');
-        startCallTimer();
+        _updateStore({ callState: 'connected' });
+        _startSharedTimer();
       }
     }
-  }, [startCallTimer]);
+  }, []);
 
   // ─── Synchronisation inter-instances : quand une instance réussit WebRTC,
   //       toutes les autres (ChatLayout / CallScreen) reçoivent l'événement ───
@@ -212,12 +373,12 @@ export function useCall(): UseCallReturn {
       // problème de stale ref (au moment où emitCallConnected est appelé,
       // le re-render avec 'connecting' n'a pas encore eu lieu).
       if (currentCallIdRef.current && callStateRef.current !== 'connected' && callStateRef.current !== 'ended') {
-        setCallState('connected');
-        startCallTimer();
+        _updateStore({ callState: 'connected' });
+        _startSharedTimer();
       }
     };
     return onCallConnected(onConnected);
-  }, [startCallTimer]);
+  }, []);
 
   // ============================================================
   // AUTO-INIT depuis l'URL — quand CallScreen se monte
@@ -230,14 +391,14 @@ export function useCall(): UseCallReturn {
     if (!callId || !role || !type) return;
 
     currentCallIdRef.current = callId;
-    setCallType(type as CallType);
+    _updateStore({ callType: type as CallType });
 
     if (role === 'caller') {
       // L'appelant attend que le partenaire réponde — le handler Realtime UPDATE s'en charge
-      setCallState('calling');
+      _updateStore({ callState: 'calling' });
     } else {
       // Le répondant initie WebRTC immédiatement en tant qu'offerer
-      setCallState('connecting');
+      _updateStore({ callState: 'connecting' });
       initZegoCall(callId, type as CallType, true);
     }
 
@@ -267,9 +428,7 @@ export function useCall(): UseCallReturn {
           const me = await getCurrentProfile();
           if (!me || call.caller_id === me.id) return;
 
-          setIncomingCall(call);
-          setCallType(call.type);
-          setCallState('ringing');
+          _updateStore({ incomingCall: call, callType: call.type, callState: 'ringing' });
           currentCallIdRef.current = call.id; // pour que l'UPDATE puisse nettoyer
           notifyIncomingCall(partnerRef.current?.name || 'Partenaire', call.type);
         }
@@ -284,7 +443,7 @@ export function useCall(): UseCallReturn {
 
           // L'appelant détecte que le partenaire a répondu (answerer = pas d'offre SDP)
           if (updated.status === 'answered' && !updated.ended_at && updated.caller_id === me.id && currentCallIdRef.current === updated.id) {
-            setCallState('connecting');
+            _updateStore({ callState: 'connecting' });
             await initZegoCall(updated.id, updated.type, false);
           }
 
@@ -295,11 +454,13 @@ export function useCall(): UseCallReturn {
               setOnConnectionStateChange(null);
               await stopPublish().catch(() => {});
               await leaveRoom(updated.id).catch(() => {});
-              stopCallTimer();
+              _stopSharedTimer();
+              if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
+              _wasEverConnected = false;
               currentCallIdRef.current = null;
               _zegoInitializedCallId = null;
-              setCallState('ended');
-              setTimeout(() => setCallState('idle'), 2000);
+              _updateStore({ callState: 'ended' });
+              setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
             }
           }
 
@@ -318,11 +479,13 @@ export function useCall(): UseCallReturn {
             setOnConnectionStateChange(null);
             await stopPublish().catch(() => {});
             await leaveRoom(updated.id).catch(() => {});
-            stopCallTimer();
+            _stopSharedTimer();
+            if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
+            _wasEverConnected = false;
             currentCallIdRef.current = null;
             _zegoInitializedCallId = null;
-            setCallState('ended');
-            setTimeout(() => setCallState('idle'), 2000);
+            _updateStore({ callState: 'ended' });
+            setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
           }
         }
       )
@@ -336,8 +499,7 @@ export function useCall(): UseCallReturn {
     const me = profileRef.current;
     if (!me) return;
 
-    setCallType(type);
-    setCallState('calling');
+    _updateStore({ callType: type, callState: 'calling' });
 
     const { data: call, error } = await supabase
       .from('calls')
@@ -351,7 +513,7 @@ export function useCall(): UseCallReturn {
       .single();
 
     if (error || !call) {
-      setCallState('idle');
+      _updateStore({ callState: 'idle' });
       return;
     }
 
@@ -365,7 +527,7 @@ export function useCall(): UseCallReturn {
     stopRingtone();
     const callId = incomingCall.id;
     currentCallIdRef.current = callId;
-    setIncomingCall(null);
+    _updateStore({ incomingCall: null });
 
     await supabase
       .from('calls')
@@ -381,8 +543,7 @@ export function useCall(): UseCallReturn {
     if (!incomingCall) return;
     stopRingtone();
     await supabase.from('calls').update({ status: 'failed' }).eq('id', incomingCall.id);
-    setIncomingCall(null);
-    setCallState('idle');
+    _updateStore({ incomingCall: null, callState: 'idle' });
   }, [incomingCall]);
 
   // ─── RACCROCHER ───
@@ -391,7 +552,14 @@ export function useCall(): UseCallReturn {
     if (!callId) return;
     stopRingtone();
     playCallEndSound();
-    setCallState('ended');
+
+    // wasAnswered utilise _wasEverConnected (flag module-level persistant)
+    // plutôt que _store.callState, car le callback WebRTC 'disconnected'
+    // peut déjà avoir mis le store à 'ended'.
+    const wasAnswered = _wasEverConnected;
+    const currentDuration = _store.callDuration;
+
+    _updateStore({ callState: 'ended' });
 
     const remoteId = remoteStreamIdRef.current;
     if (remoteId) {
@@ -404,14 +572,12 @@ export function useCall(): UseCallReturn {
     await stopPublish();
     await leaveRoom(callId);
 
-    // Si l'appel était connecté → 'answered', sinon → 'cancelled'
-    const wasAnswered = callState === 'connected';
     await supabase
       .from('calls')
       .update({
         status: wasAnswered ? 'answered' : 'cancelled',
         ended_at: new Date().toISOString(),
-        duration_s: wasAnswered ? callDuration : null,
+        duration_s: wasAnswered ? currentDuration : null,
       })
       .eq('id', callId);
 
@@ -439,7 +605,7 @@ export function useCall(): UseCallReturn {
             type: 'call',
             content: JSON.stringify({
               callType: callRecord.type,
-              duration: wasAnswered ? callDuration : 0,
+              duration: wasAnswered ? currentDuration : 0,
               status: wasAnswered ? 'answered' : 'cancelled',
             }),
           });
@@ -447,41 +613,57 @@ export function useCall(): UseCallReturn {
       }
     }
 
-    stopCallTimer();
+    _stopSharedTimer();
+    if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
+    _wasEverConnected = false;
     currentCallIdRef.current = null;
     _zegoInitializedCallId = null;
 
     setTimeout(() => {
-      setCallState('idle');
+      _updateStore({ callState: 'idle' });
       navigate(-1);
     }, 1000);
-  }, [callDuration, callState, stopCallTimer, navigate]);
+  }, [navigate]);
 
   // ─── Toggle Muet ───
   const toggleMute = useCallback(async () => {
-    const v = !isMuted;
-    setIsMuted(v);
+    const v = !_store.isMuted;
+    _updateStore({ isMuted: v });
     await muteMicrophone(v);
-  }, [isMuted]);
+  }, []);
 
   // ─── Toggle Haut-parleur ───
   const toggleSpeakerFn = useCallback(async () => {
-    const v = !isSpeakerOn;
-    setIsSpeakerOn(v);
+    const v = !_store.isSpeakerOn;
+    _updateStore({ isSpeakerOn: v });
     await toggleSpeaker(v);
-  }, [isSpeakerOn]);
+  }, []);
+
+  // ─── Basculement caméra avant/arrière ───
+  const switchCamera = useCallback(async (): Promise<boolean> => {
+    try {
+      return await switchCameraZego();
+    } catch {
+      return false;
+    }
+  }, []);
 
   const resetCall = useCallback(() => {
-    setCallState('idle');
-    setIncomingCall(null);
-    setCallDuration(0);
+    _updateStore({
+      callState: 'idle',
+      incomingCall: null,
+      callDuration: 0,
+    });
     currentCallIdRef.current = null;
     _zegoInitializedCallId = null;
-    stopCallTimer();
-  }, [stopCallTimer]);
+    _wasEverConnected = false;
+    if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
+    _stopSharedTimer();
+  }, []);
 
   return {
     callState, callType, callDuration, isSpeakerOn, isMuted, incomingCall,
-    startCall, answerCall, rejectCall, endCall, toggleMute, toggleSpeakerFn, resetCall,
+    startCall, answerCall, rejectCall, endCall, toggleMute, toggleSpeakerFn,
+    switchCamera, resetCall,
   };
 }

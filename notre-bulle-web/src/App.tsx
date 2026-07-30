@@ -8,6 +8,7 @@ import Chat from './pages/Chat';
 import CycleCalendar from './pages/CycleCalendar';
 import Settings from './pages/Settings';
 import CallScreen from './pages/CallScreen';
+import CallOverlay from './components/call/CallOverlay';
 import { requestNotificationPermission } from './hooks/useNotifications';
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="/call" element={<CallScreen />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          <CallOverlay />
         </AuthProvider>
       </BrowserRouter>
     </ErrorBoundary>
