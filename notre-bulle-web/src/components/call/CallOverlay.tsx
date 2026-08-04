@@ -19,7 +19,7 @@ import { colors, borderRadius } from '../../constants/theme';
 import {
   MicIcon, MicOffIcon, PhoneOffIcon, VideoIcon, FlipCameraIcon,
 } from '../Icons';
-import { setPipVideoElement, requestPictureInPicture, exitPictureInPicture, isPiPSupported } from '../../lib/zego';
+import { setPipVideoElement, requestPictureInPicture, exitPictureInPicture, isPiPSupported, subscribePipWantsAudio, isPipWantsAudio, setPipWantsAudio } from '../../lib/zego';
 
 // ==========================================
 // FORMATAGE DURÉE D'APPEL
@@ -105,7 +105,14 @@ export default function CallOverlay() {
   // Reflète l'état de la fenêtre flottante OS (enter/leave picture-in-picture).
   // Sert à couper la miniature de l'overlay pour éviter le double audio
   // quand le PiP prend le relais du son.
-  const [isInPip, setIsInPip] = useState(false);
+  //
+  // Source de vérité partagée (zego.ts) : `requestPictureInPicture()` positionne
+  // `pipWantsAudio` SYNCHRONEMENT dans le geste utilisateur. Sans ça, l'entrée
+  // en PiP depuis CallScreen (bouton Minimiser) laisserait isInPip à false
+  // jusqu'à l'événement asynchrone `enterpictureinpicture`, et le re-render du
+  // timer de durée re-muterait l'élément PiP pendant son ouverture → audio coupé.
+  const [isInPip, setIsInPip] = useState(isPipWantsAudio());
+  useEffect(() => subscribePipWantsAudio(() => setIsInPip(isPipWantsAudio())), []);
 
   const isVideo = callType === 'video';
   const isOnCallScreen = location.pathname === '/call';
@@ -270,7 +277,7 @@ export default function CallOverlay() {
     // est démuet (dans requestPictureInPicture) et porte le son de l'appel ;
     // la miniature de l'overlay doit donc être coupée pour éviter l'écho.
     const onEnterPip = () => {
-      setIsInPip(true);
+      setPipWantsAudio(true);
     };
     // Quand l'utilisateur ferme la fenêtre PiP (bouton X ou retour), on rend
     // le son à l'élément principal et on revient sur l'écran d'appel.
@@ -278,7 +285,7 @@ export default function CallOverlay() {
     // pilote l'état réel à chaque re-render (et re-démuet l'élément si l'appel
     // audio minimisé doit continuer de porter le son).
     const onLeavePip = () => {
-      setIsInPip(false);
+      setPipWantsAudio(false);
       if (callState === 'connected') {
         navigate('/call');
       }

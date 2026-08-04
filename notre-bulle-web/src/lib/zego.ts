@@ -583,34 +583,77 @@ export function setPipVideoElement(el: HTMLVideoElement | null): void {
   _pipVideoElement = el;
 }
 
+// ──────────────────────────────────────────────────────────────
+// État partagé « la fenêtre PiP doit être audible ».
+//
+// Le problème corrigé ici : `requestPictureInPicture()` retire la
+// sourdine de l'élément IMPÉRATIVEMENT dans le geste utilisateur, mais
+// l'événement asynchrone `enterpictureinpicture` ne se déclenche que
+// PLUS TARD. Entre les deux, CallOverlay re-render (le timer de durée
+// tick chaque seconde) et la prop `muted={!pipShouldBeAudible}` (dont
+// isInPip est encore false) re-mutait l'élément. Chrome Android « loque »
+// l'état muet de la fenêtre PiP à l'ouverture : même démuté ensuite, le
+// PiP reste muet → audio coupé en entrant en PiP, vidéo comme audio.
+//
+// Solution : positionner ce flag SYNCHRONEMENT dans le geste (avant la
+// demande), et le faire refléter en état React par CallOverlay, pour que
+// `pipShouldBeAudible` soit vrai dès le premier re-render qui suit le
+// geste. Plus aucun re-render ne peut re-muter l'élément pendant
+// l'ouverture de la fenêtre.
+// ──────────────────────────────────────────────────────────────
+let _pipWantsAudio = false;
+const _pipListeners = new Set<() => void>();
+
+export function setPipWantsAudio(v: boolean): void {
+  if (_pipWantsAudio === v) return;
+  _pipWantsAudio = v;
+  _pipListeners.forEach(fn => fn());
+}
+export function isPipWantsAudio(): boolean {
+  return _pipWantsAudio;
+}
+export function subscribePipWantsAudio(fn: () => void): () => void {
+  _pipListeners.add(fn);
+  return () => { _pipListeners.delete(fn); };
+}
+
 /** Appelle requestPictureInPicture sur l'élément vidéo PiP.
  *  Doit être appelé dans un gestionnaire d'événement utilisateur
  *  (click, touch) pour respecter la contrainte navigateur. */
 export function requestPictureInPicture(): boolean {
   const video = _pipVideoElement;
   if (!video) return false;
-  if (document.pictureInPictureElement) return true; // déjà en PiP
+  if (document.pictureInPictureElement) {
+    setPipWantsAudio(true);
+    return true; // déjà en PiP
+  }
 
-  // La fenêtre PiP doit être AUDIBLE : on retire la sourdine AVANT la
-  // demande (dans le geste utilisateur), sinon le PiP reste muet.
-  // L'élément PiP est normalement muted pour éviter le double audio
-  // avec CallScreen ; on ne le démuet que pour la durée du PiP.
+  // La fenêtre PiP doit être AUDIBLE. Deux choses, DANS le geste :
+  //  1. On retire la sourdine AVANT la demande — sinon Chrome crée une
+  //     fenêtre PiP muette (état loché à l'ouverture sur Android).
+  //  2. setPipWantsAudio(true) SYNCHRONE : CallOverlay re-render tout de
+  //     suite avec pipShouldBeAudible = true, donc la prop React ne re-mutera
+  //     jamais l'élément pendant l'ouverture (voir explication ci-dessus).
   video.muted = false;
+  setPipWantsAudio(true);
 
   try {
     video.requestPictureInPicture().catch((err: any) => {
       console.warn('[PiP] Erreur entrée PiP:', err);
+      setPipWantsAudio(false);
       video.muted = true; // restauration si l'entrée en PiP a échoué
     });
     return true;
   } catch (err) {
     console.warn('[PiP] Erreur entrée PiP:', err);
+    setPipWantsAudio(false);
     video.muted = true;
     return false;
   }
 }
 
 export function exitPictureInPicture(): void {
+  setPipWantsAudio(false);
   if (document.pictureInPictureElement) {
     document.exitPictureInPicture().catch(() => {});
   }
