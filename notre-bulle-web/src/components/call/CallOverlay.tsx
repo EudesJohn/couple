@@ -116,6 +116,17 @@ export default function CallOverlay() {
   const pipSupported = isPiPSupported();
   const pipActive = typeof document !== 'undefined' && !!document.pictureInPictureElement;
 
+  // L'élément vidéo PiP caché porte le son de l'appel quand :
+  //   - la fenêtre PiP flottante est ouverte (isInPip), OU
+  //   - l'appel est AUDIO et minimisé (CallScreen démonté) → c'est le seul
+  //     porteur du son, sinon on n'entendrait plus rien.
+  // Sinon il reste MUET pour éviter le double audio avec CallScreen / la
+  // miniature. Doit être une prop CONTROLLÉE par l'état : un `muted` statique
+  // dans le JSX serait ré-appliqué par React à chaque re-render (le timer de
+  // durée fait re-render l'overlay chaque seconde) et re-muterait la fenêtre
+  // PiP juste après son ouverture → audio coupé.
+  const pipShouldBeAudible = isInPip || (!isVideo && !isOnCallScreen && callState === 'connected');
+
   // ==========================================
   // DRAG STATE (refs pour éviter re-renders)
   // ==========================================
@@ -261,10 +272,12 @@ export default function CallOverlay() {
     const onEnterPip = () => {
       setIsInPip(true);
     };
-    // Quand l'utilisateur ferme la fenêtre PiP (bouton X ou retour),
-    // on rend le son à l'élément principal et on revient sur l'écran d'appel.
+    // Quand l'utilisateur ferme la fenêtre PiP (bouton X ou retour), on rend
+    // le son à l'élément principal et on revient sur l'écran d'appel.
+    // Pas de `el.muted = true` ici : la prop React `muted={!pipShouldBeAudible}`
+    // pilote l'état réel à chaque re-render (et re-démuet l'élément si l'appel
+    // audio minimisé doit continuer de porter le son).
     const onLeavePip = () => {
-      el.muted = true;
       setIsInPip(false);
       if (callState === 'connected') {
         navigate('/call');
@@ -359,7 +372,7 @@ export default function CallOverlay() {
           ref={pipVideoRef}
           autoPlay
           playsInline
-          muted
+          muted={!pipShouldBeAudible}
           disablePictureInPicture={false}
           style={{
             position: 'fixed',
