@@ -11,8 +11,8 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { uploadMedia, compressImage } from '../lib/media';
 import { cacheMessages, getCachedMessages, addCachedMessage, updateCachedMessage, removeCachedMessage } from '../lib/cache';
-import { getMyProfileId as getProfileId } from '../lib/profile';
-import { notifyNewMessage } from './useNotifications';
+import { getMyProfileId as getProfileId, getOwnProfileId, getActualPartnerProfileId } from '../lib/profile';
+import { notifyNewMessage, triggerPushNotification } from './useNotifications';
 import type { MessageWithDetails, Message, MessageType, Attachment, MessageStatus } from '../types/database';
 
 let msgMountId = 0;
@@ -22,7 +22,10 @@ interface UseMessagesReturn {
   sendText: (content: string, replyToId?: string) => Promise<void>;
   sendVoice: (uri: string, durationMs: number) => Promise<void>;
   sendImage: (uri: string, mimeType: string, width: number, height: number) => Promise<void>;
+  /** Envoie plusieurs photos à la suite (sélection multiple de la galerie) */
+  sendImages: (images: { uri: string; mimeType: string; width: number; height: number }[]) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<boolean>;
+  editMessage: (messageId: string, newContent: string) => Promise<boolean>;
   isLoading: boolean;
   isRefreshing: boolean;
   refreshMessages: () => Promise<void>;
@@ -198,7 +201,8 @@ export function useMessages(): UseMessagesReturn {
                     *,
                     sender:profiles!sender_id(id, display_name, avatar_url),
                     attachments(*),
-                    statuses:message_status(*)
+                    statuses:message_status(*),
+                    reply_to_message:messages!reply_to(id, content, type)
                   `)
                   .eq('id', newMsg.id)
                   .single();
@@ -227,7 +231,8 @@ export function useMessages(): UseMessagesReturn {
                   *,
                   sender:profiles!sender_id(id, display_name, avatar_url),
                   attachments(*),
-                  statuses:message_status(*)
+                  statuses:message_status(*),
+                  reply_to_message:messages!reply_to(id, content, type)
                 `)
                 .eq('id', newMsg.id)
                 .single();
@@ -282,7 +287,8 @@ export function useMessages(): UseMessagesReturn {
                 *,
                 sender:profiles!sender_id(id, display_name, avatar_url),
                 attachments(*),
-                statuses:message_status(*)
+                statuses:message_status(*),
+                reply_to_message:messages!reply_to(id, content, type)
               `)
               .eq('id', payload.new.id)
               .single();
@@ -548,6 +554,18 @@ export function useMessages(): UseMessagesReturn {
       created_at: msg.created_at,
     } as Attachment] : [];
 
+    // Récupérer le message cité (réponse) pour afficher le bloc
+    // "Réponse" immédiatement, sans attendre Realtime/rafraîchissement.
+    let replyToMessage: MessageWithDetails['reply_to_message'] = null;
+    if (replyToId) {
+      const { data: replyData } = await supabase
+        .from('messages')
+        .select('id, content, type')
+        .eq('id', replyToId)
+        .single();
+      if (replyData) replyToMessage = replyData as MessageWithDetails['reply_to_message'];
+    }
+
     const optimisticMsg: MessageWithDetails = {
       ...msg,
       sender: { id: profileId, display_name: '', avatar_url: '' },
@@ -559,7 +577,7 @@ export function useMessages(): UseMessagesReturn {
         created_at: msg.created_at,
         read_at: null,
       }],
-      reply_to_message: null,
+      reply_to_message: replyToMessage,
     };
     setMessages((prev) => {
       if (prev.some((m) => m.id === msg.id)) return prev;
@@ -570,6 +588,26 @@ export function useMessages(): UseMessagesReturn {
       lastMsgTimestampRef.current = msg.created_at;
     }
     addCachedMessage(optimisticMsg).catch(() => {});
+
+    // Envoyer une notification push au partenaire (en arrière-plan)
+    // Double sécurisation : même si le trigger DB pg_net échoue,
+    // le push est envoyé directement depuis le client.
+    const partnerProfileId = getActualPartnerProfileId();
+    if (partnerProfileId) {
+      const pushBody = type === 'text' && content ? content
+        : type === 'image' ? 'Photo'
+        : type === 'voice' ? 'Message vocal'
+        : type === 'video' ? 'Vidéo'
+        : 'Nouveau message';
+      supabase.from('profiles').select('display_name').eq('id', getOwnProfileId()).single()
+        .then(({ data: p }: { data: { display_name: string } | null }) => {
+          const senderName = p?.display_name || 'Ma chérie';
+          triggerPushNotification(partnerProfileId, senderName, pushBody, {
+            screen: 'chat',
+            conversationId: convId,
+          }).catch(() => {});
+        }).catch(() => {});
+    }
 
     return true;
   }, [convId, myProfileId]);
@@ -593,34 +631,46 @@ export function useMessages(): UseMessagesReturn {
     }
   }, [createMessage]);
 
-  // --- ENVOI IMAGE (avec progression) ---
-  const sendImage = useCallback(async (uri: string, mimeType: string, width: number, height: number) => {
+  // --- ENVOI DE PLUSIEURS IMAGES (avec progression globale) ---
+  // Les photos sont envoyées à la suite : compression → upload → message,
+  // chacune occupant une fraction de la barre de progression (0% → 100%).
+  const sendImages = useCallback(async (images: Array<{ uri: string; mimeType: string; width: number; height: number }>) => {
+    if (images.length === 0) return;
     setIsUploading(true);
     setUploadProgress(0);
+    const total = images.length;
     try {
-      const compressedUri = await compressImage(uri);
-      setUploadProgress(10); // compression faite
-      const result = await uploadMedia('MEDIA', compressedUri, 'image/jpeg', (p) => {
-        setUploadProgress(10 + Math.round(p * 0.85)); // 10% → 95%
-      });
-      setUploadProgress(95);
-      await createMessage('image', null, {
-        storage_path: result.path,
-        mime_type: 'image/jpeg',
-        width,
-        height,
-        file_size: 0,
-      });
+      for (let i = 0; i < total; i++) {
+        const img = images[i];
+        const base = (i / total) * 100;
+        const compressedUri = await compressImage(img.uri);
+        setUploadProgress(base + (10 / total)); // compression faite
+        const result = await uploadMedia('MEDIA', compressedUri, 'image/jpeg', (p) => {
+          setUploadProgress(base + (10 / total) + Math.round(p * (85 / total))); // base → base+85/total
+        });
+        await createMessage('image', null, {
+          storage_path: result.path,
+          mime_type: 'image/jpeg',
+          width: img.width,
+          height: img.height,
+          file_size: 0,
+        });
+      }
       setUploadProgress(100);
     } catch (err: any) {
-      console.error('Erreur envoi image:', err);
-      const msg = err?.message || err?.error_description || "Erreur lors de l'envoi de l'image";
+      console.error('Erreur envoi images:', err);
+      const msg = err?.message || err?.error_description || "Erreur lors de l'envoi des photos";
       setError(msg);
     } finally {
       setIsUploading(false);
       setTimeout(() => setUploadProgress(null), 1000);
     }
   }, [createMessage]);
+
+  // --- ENVOI D'UNE SEULE IMAGE (photo prise / une seule sélectionnée) ---
+  const sendImage = useCallback(async (uri: string, mimeType: string, width: number, height: number) => {
+    await sendImages([{ uri, mimeType, width, height }]);
+  }, [sendImages]);
 
   // --- ENVOI VIDÉO (pas de compression, progression) ---
   const sendVideo = useCallback(async (uri: string, mimeType: string, width: number, height: number, durationMs?: number) => {
@@ -723,8 +773,47 @@ export function useMessages(): UseMessagesReturn {
     return true;
   }, [convId, myProfileId]);
 
+  // ==========================================
+  // MODIFICATION D'UN MESSAGE (texte uniquement)
+  // ==========================================
+  const editMessage = useCallback(async (messageId: string, newContent: string): Promise<boolean> => {
+    const profileId = myProfileId || getProfileId();
+    if (!convId || !profileId) return false;
+    if (!newContent.trim()) return false;
+
+    const trimmed = newContent.trim();
+    const editedAt = new Date().toISOString();
+
+    // Mise à jour optimiste immédiate
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId && m.type === 'text'
+          ? { ...m, content: trimmed, edited_at: editedAt }
+          : m
+      )
+    );
+
+    const { error } = await supabase
+      .from('messages')
+      .update({ content: trimmed, edited_at: editedAt })
+      .eq('id', messageId)
+      .eq('sender_id', profileId); // Seulement ses propres messages
+
+    if (error) {
+      console.warn('Erreur modification message:', error.message);
+      // Rollback : on recharge les messages pour revenir à l'état réel
+      refreshMessages();
+      return false;
+    }
+
+    // Synchroniser le cache (le champ optimiste correspond à la valeur serveur)
+    const updatedMsg = messages.find((m) => m.id === messageId);
+    if (updatedMsg) updateCachedMessage({ ...updatedMsg, content: trimmed, edited_at: editedAt }).catch(() => {});
+    return true;
+  }, [convId, myProfileId, messages, refreshMessages]);
+
   return {
-    messages, sendText, sendVoice, sendImage, deleteMessage,
+    messages, sendText, sendVoice, sendImage, sendImages, deleteMessage, editMessage,
     isLoading, isRefreshing, refreshMessages,
     isUploading, uploadProgress, myProfileId, error,
   };

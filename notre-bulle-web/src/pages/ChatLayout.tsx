@@ -18,7 +18,7 @@ import { IncomingCallBanner } from '../components/call/IncomingCallBanner';
 
 export default function ChatLayout() {
   const navigate = useNavigate();
-  const { isPartnerOnline, partnerPresence } = usePresence();
+  const { isPartnerOnline, partnerPresence, lastSeenLabel } = usePresence();
   const { startCall, incomingCall, answerCall, rejectCall, callState } = useCall();
   const { identity } = useAuth();
   const PARTNER_NAME = identity === 'woman' ? 'Mon chéri' : 'Ma chérie';
@@ -127,7 +127,7 @@ export default function ChatLayout() {
               fontSize: 12, fontWeight: 500,
               color: isPartnerOnline ? colors.online : colors.textTertiary,
             }}>
-              {isTyping ? 'Écrit...' : isPartnerOnline ? 'En ligne' : 'Hors ligne'}
+              {isTyping ? 'Écrit...' : lastSeenLabel}
             </div>
           </div>
         </div>
@@ -135,7 +135,7 @@ export default function ChatLayout() {
         {/* Actions */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <motion.button
-            whileTap={{ scale: 0.9 }}
+            whileTap={{ scale: 0.94 }}
             onClick={() => navigate('/cycle')}
             style={{
               width: 38, height: 38, borderRadius: 19,
@@ -147,7 +147,7 @@ export default function ChatLayout() {
           </motion.button>
 
           <motion.button
-            whileTap={{ scale: 0.9 }}
+            whileTap={{ scale: 0.94 }}
             onClick={() => navigate('/settings')}
             style={{
               width: 38, height: 38, borderRadius: 19,
@@ -159,7 +159,7 @@ export default function ChatLayout() {
           </motion.button>
 
           <motion.button
-            whileTap={{ scale: 0.9 }}
+            whileTap={{ scale: 0.94 }}
             onClick={() => setCallSheetVisible(true)}
             style={{
               width: 38, height: 38, borderRadius: 19,

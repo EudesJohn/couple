@@ -1,17 +1,13 @@
 // ============================================================
 // 🔐 Écran de Verrouillage — Design Premium Burgundy & Gold
-// PIN 4 chiffres
-// 1ʳᵉ connexion : codes préréglés 1234 (Femme) / 1235 (Homme)
-// Connexions suivantes : vérification du PIN personnalisé
+// 1ʳᵉ connexion : confirmation du profil par UUID → puis code PIN
+// Connexions suivantes : saisie du PIN (fenêtre de 24 h)
 // ============================================================
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { colors, spacing, borderRadius, fonts } from '../constants/theme';
 import { useAuth } from '../hooks/useAuth';
-import { getIdentityLabel, type UserIdentity } from '../lib/auth';
-import { LockIcon, HeartFilledIcon, HeartIcon } from '../components/Icons';
-import { requestNotificationPermission } from '../hooks/useNotifications';
+import { HeartFilledIcon } from '../components/Icons';
 
 const PIN_LENGTH = 4;
 
@@ -62,128 +58,215 @@ function FloatingHearts() {
 }
 
 // ==========================================
-// Écran de bienvenue après identification
+// 🏷️ Confirmation du profil par UUID (onboarding)
 // ==========================================
-function WelcomeScreen({ role }: { role: UserIdentity }) {
-  const navigate = useNavigate();
-  const label = getIdentityLabel(role);
-
-  useEffect(() => {
-    const t = setTimeout(() => navigate('/chat', { replace: true }), 2200);
-    return () => clearTimeout(t);
-  }, [navigate]);
+function ProfileConfirm({
+  onVerify,
+  verifying,
+  error,
+}: {
+  onVerify: (uuid: string) => void;
+  verifying: boolean;
+  error: string;
+}) {
+  const [value, setValue] = useState('');
 
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.9 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.6, ease: [0.25, 0.1, 0.25, 1] }}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.2, duration: 0.6 }}
       style={{
-        minHeight: '100vh',
-        display: 'flex',
-        flexDirection: 'column',
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: colors.background,
-        padding: '0 32px',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        width: '100%', maxWidth: 360, position: 'relative', zIndex: 1,
       }}
     >
-      <motion.div
-        animate={{ scale: [1, 1.15, 1] }}
-        transition={{ duration: 1.2, ease: 'easeInOut', delay: 0.2 }}
-        style={{ marginBottom: 28 }}
-      >
-        <HeartFilledIcon size={72} color={colors.accent} />
-      </motion.div>
-      <h1 style={{
-        fontFamily: fonts.display,
-        fontSize: 38,
-        fontWeight: 400,
-        color: colors.primary,
-        margin: 0, marginBottom: 12,
-        textAlign: 'center',
-      }}>
-        Bienvenue
-      </h1>
       <p style={{
         fontFamily: fonts.body,
-        fontSize: 19,
-        fontStyle: 'italic',
+        fontSize: 15,
         color: colors.textSecondary,
         textAlign: 'center',
-        lineHeight: '28px',
-        margin: 0,
+        lineHeight: '22px',
+        margin: 0, marginBottom: 20,
       }}>
-        {label}, tu es chez toi ❤️
+        Entre l’UUID de ton profil pour continuer
+      </p>
+
+      <input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="UUID du profil…"
+        autoCapitalize="none"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        enterKeyHint="go"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !verifying) onVerify(value);
+        }}
+        style={{
+          width: '100%',
+          backgroundColor: colors.surface,
+          borderRadius: borderRadius.lg,
+          padding: `${spacing.lg}px ${spacing.xl}px`,
+          fontSize: 15,
+          color: colors.text,
+          border: `1.5px solid ${error ? colors.error : colors.border}`,
+          outline: 'none',
+          fontFamily: 'monospace',
+          letterSpacing: 0.5,
+          marginBottom: 14,
+          transition: 'border-color 0.2s ease',
+        }}
+      />
+
+      <motion.button
+        whileTap={{ scale: 0.96 }}
+        onClick={() => onVerify(value)}
+        disabled={verifying}
+        style={{
+          width: '100%',
+          backgroundColor: colors.primary,
+          borderRadius: borderRadius.lg,
+          padding: `${spacing.md}px 0`,
+          border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+          opacity: verifying ? 0.6 : 1,
+        }}
+      >
+        <span style={{ color: '#FAFAF9', fontWeight: 600, fontSize: 16 }}>
+          {verifying ? 'Vérification…' : 'Vérifier'}
+        </span>
+      </motion.button>
+
+      {error && (
+        <motion.p
+          initial={{ opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          style={{
+            fontSize: 13, color: colors.error, marginTop: 14,
+            textAlign: 'center',
+          }}
+        >
+          {error}
+        </motion.p>
+      )}
+
+      <p style={{
+        fontSize: 12, color: colors.textTertiary, marginTop: 18,
+        textAlign: 'center', fontStyle: 'italic', lineHeight: '17px',
+      }}>
+        L’UUID de ton profil se trouve dans la configuration de l’app
+        (VITE_MY_PROFILE_ID / VITE_PARTNER_PROFILE_ID)
       </p>
     </motion.div>
   );
 }
 
+// ==========================================
+// ÉCRAN PRINCIPAL
+// ==========================================
 export default function LockScreen() {
-  const navigate = useNavigate();
-  const { isFirstLaunch, identity, unlockWithPin, setupFirstIdentity } = useAuth();
-  const [pin, setPin] = useState('');
+  const { status, confirmProfile, setPin, unlockWithPin, authError, clearAuthError } = useAuth();
+
+  // Saisie PIN (setup + déverrouillage)
+  const [pin, setPinValue] = useState('');
+  const [setupPhase, setSetupPhase] = useState<'choose' | 'confirm'>('choose');
+  const [pendingPin, setPendingPin] = useState<string | null>(null);
+
+  // Erreurs / états
   const [isError, setIsError] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [attempts, setAttempts] = useState(0);
   const [shakeKey, setShakeKey] = useState(0);
-  const [welcomeRole, setWelcomeRole] = useState<UserIdentity | null>(null);
 
-  const handleKeyPress = useCallback(
-    async (key: string) => {
-      if (key === '⌫') {
-        setPin((prev) => prev.slice(0, -1));
-        setIsError(false);
-        setErrorMsg('');
-        return;
+  // Confirmation du profil
+  const [verifying, setVerifying] = useState(false);
+  const [uuidError, setUuidError] = useState('');
+
+  const handleVerifyProfile = useCallback(async (uuid: string) => {
+    if (verifying) return;
+    setUuidError('');
+    setVerifying(true);
+    const res = await confirmProfile(uuid);
+    setVerifying(false);
+    if (!res.ok) setUuidError(res.error || 'Erreur inconnue');
+    // Succès → le statut passe à 'setupPin', le composant se ré-affiche
+  }, [verifying, confirmProfile]);
+
+  const resetSetupPin = useCallback(() => {
+    setPinValue('');
+    setPendingPin(null);
+    setSetupPhase('choose');
+  }, []);
+
+  const handleKeyPress = useCallback(async (key: string) => {
+    if (key === '⌫') {
+      setPinValue((prev) => prev.slice(0, -1));
+      setIsError(false);
+      setErrorMsg('');
+      return;
+    }
+    // Une nouvelle saisie efface une éventuelle erreur réseau précédente
+    clearAuthError();
+    if (key === '' || pin.length >= PIN_LENGTH) return;
+
+    const newPin = pin + key;
+    setPinValue(newPin);
+    if (newPin.length !== PIN_LENGTH) return;
+
+    if (status === 'locked') {
+      // --- DÉVERROUILLAGE : vérification du PIN hashé ---
+      const valid = await unlockWithPin(newPin);
+      if (valid) {
+        // Succès → statut 'unlocked' → RootRoute redirige vers /chat
+      } else {
+        setAttempts((a) => a + 1);
+        setIsError(true);
+        // Une erreur réseau (serveur injoignable) prime sur « Code incorrect »
+        setErrorMsg(authError || 'Code incorrect');
+        setShakeKey((k) => k + 1);
+        setTimeout(() => setPinValue(''), 400);
+        setTimeout(() => setIsError(false), 500);
       }
-
-      if (key === '' || pin.length >= PIN_LENGTH) return;
-
-      const newPin = pin + key;
-      setPin(newPin);
-
-      if (newPin.length === PIN_LENGTH) {
-        if (isFirstLaunch) {
-          // --- 1ʳᵉ CONNEXION : reconnaissance par code préréglé ---
-          const role = await setupFirstIdentity(newPin);
-          if (role) {
-            setWelcomeRole(role);
-            requestNotificationPermission().catch(() => {});
-          } else {
+    } else if (status === 'setupPin') {
+      // --- CHOIX DU PIN (1ʳᵉ connexion) ---
+      if (setupPhase === 'choose') {
+        setPendingPin(newPin);
+        setPinValue('');
+        setSetupPhase('confirm');
+      } else if (setupPhase === 'confirm') {
+        if (newPin === pendingPin) {
+          const ok = await setPin(newPin);
+          if (!ok) {
             setIsError(true);
-            setErrorMsg('Code invalide · utilise 1234 (Femme) ou 1235 (Homme)');
+            setErrorMsg('Erreur lors de l’enregistrement');
             setShakeKey((k) => k + 1);
-            setTimeout(() => setPin(''), 400);
-            setTimeout(() => setIsError(false), 2000);
+            setTimeout(resetSetupPin, 1200);
           }
+          // Succès → statut 'unlocked' → RootRoute redirige vers /chat
         } else {
-          // --- CONNEXIONS SUIVANTES : vérification PIN hashé ---
-          const valid = await unlockWithPin(newPin);
-          if (valid) {
-            setTimeout(() => navigate('/chat', { replace: true }), 350);
-            requestNotificationPermission().catch(() => {});
-          } else {
-            setAttempts((a) => a + 1);
-            setIsError(true);
-            setErrorMsg('Code incorrect');
-            setShakeKey((k) => k + 1);
-            setTimeout(() => setPin(''), 400);
-            setTimeout(() => setIsError(false), 500);
-          }
+          setIsError(true);
+          setErrorMsg('Les codes ne correspondent pas');
+          setShakeKey((k) => k + 1);
+          setTimeout(() => setPinValue(''), 400);
+          setTimeout(() => {
+            setIsError(false);
+            resetSetupPin();
+          }, 1200);
         }
       }
-    },
-    [pin, isFirstLaunch, unlockWithPin, setupFirstIdentity, navigate]
-  );
-
-  // Écran de bienvenue après identification réussie
-  if (welcomeRole) {
-    return <WelcomeScreen role={welcomeRole} />;
-  }
+    }
+  }, [pin, status, setupPhase, pendingPin, unlockWithPin, setPin, resetSetupPin, authError, clearAuthError]);
 
   const KEY_SIZE = Math.min((window.innerWidth - 64 - 40) / 3, 100);
+  const isSetup = status === 'setupPin';
+  const isOnboarding = status === 'onboarding';
+
+  // Sous-titre du branding selon l'étape
+  let subtitle: string;
+  if (isOnboarding) subtitle = 'Première connexion · confirme ton profil';
+  else if (isSetup) subtitle = setupPhase === 'choose' ? 'Choisis ton code à 4 chiffres' : 'Confirme ton code';
+  else subtitle = 'Déverrouille pour nous rejoindre';
 
   return (
     <div
@@ -235,7 +318,7 @@ export default function LockScreen() {
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          marginBottom: 48,
+          marginBottom: 40,
           position: 'relative',
           zIndex: 1,
         }}
@@ -280,108 +363,118 @@ export default function LockScreen() {
         </h1>
         <p style={{
           fontFamily: fonts.body,
-          fontSize: 17,
+          fontSize: 16,
           fontStyle: 'italic',
           color: colors.textSecondary,
           textAlign: 'center',
           margin: 0,
         }}>
-          {isFirstLaunch
-            ? 'Première connexion · entre ton code'
-            : 'Déverrouille pour nous rejoindre'}
+          {subtitle}
         </p>
       </motion.div>
 
-      {/* PIN Dots */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.2, duration: 0.6 }}
-        style={{
-          display: 'flex',
-          gap: 16,
-          marginBottom: 44,
-          height: 16,
-          alignItems: 'center',
-        }}
-      >
-        <AnimatePresence mode="popLayout">
+      {isOnboarding ? (
+        /* ── CONFIRMATION DU PROFIL (UUID) ── */
+        <ProfileConfirm
+          onVerify={handleVerifyProfile}
+          verifying={verifying}
+          error={uuidError}
+        />
+      ) : (
+        <>
+          {/* PIN Dots */}
           <motion.div
-            key={shakeKey}
-            animate={isError ? {
-              x: [0, -12, 12, -12, 12, 0],
-            } : {}}
-            transition={{ duration: 0.2 }}
-            style={{ display: 'flex', gap: 16 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.2, duration: 0.6 }}
+            style={{
+              display: 'flex',
+              gap: 16,
+              marginBottom: 44,
+              height: 16,
+              alignItems: 'center',
+            }}
           >
-            {Array.from({ length: PIN_LENGTH }).map((_, i) => (
-              <div
-                key={i}
-                style={{
-                  width: 14,
-                  height: 14,
-                  borderRadius: 7,
-                  backgroundColor: isError
-                    ? colors.error
-                    : i < pin.length
-                      ? colors.primary
-                      : colors.border,
-                  boxShadow: i < pin.length && !isError
-                    ? `0 0 8px ${colors.glowBurgundy}`
-                    : undefined,
-                  transition: 'all 0.2s ease',
-                }}
-              />
+            <AnimatePresence mode="popLayout">
+              <motion.div
+                key={shakeKey}
+                animate={isError ? {
+                  x: [0, -12, 12, -12, 12, 0],
+                } : {}}
+                transition={{ duration: 0.2 }}
+                style={{ display: 'flex', gap: 16 }}
+              >
+                {Array.from({ length: PIN_LENGTH }).map((_, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: 7,
+                      backgroundColor: isError
+                        ? colors.error
+                        : i < pin.length
+                          ? colors.primary
+                          : colors.border,
+                      boxShadow: i < pin.length && !isError
+                        ? `0 0 8px ${colors.glowBurgundy}`
+                        : undefined,
+                      transition: 'background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease',
+                    }}
+                  />
+                ))}
+              </motion.div>
+            </AnimatePresence>
+          </motion.div>
+
+          {/* Numpad */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4, duration: 0.6 }}
+            style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 32, position: 'relative', zIndex: 1 }}
+          >
+            {NUMPAD_KEYS.map((row, rIdx) => (
+              <div key={rIdx} style={{ display: 'flex', gap: 20, justifyContent: 'center' }}>
+                {row.map((key) =>
+                  key === '' ? (
+                    <div key="empty" style={{ width: KEY_SIZE, height: KEY_SIZE }} />
+                  ) : (
+                    <motion.button
+                      key={key}
+                      whileTap={{ scale: 0.96 }}
+                      onClick={() => handleKeyPress(key)}
+                      aria-label={key === '⌫' ? 'Effacer' : `Chiffre ${key}`}
+                      style={{
+                        width: KEY_SIZE,
+                        height: KEY_SIZE,
+                        borderRadius: borderRadius.lg,
+                        backgroundColor: key === '⌫' ? 'transparent' : colors.surface,
+                        border: 'none',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        boxShadow: key === '⌫' ? 'none' : `0 1px 4px rgba(0,0,0,0.05)`,
+                        fontFamily: 'inherit',
+                        transition: 'transform 160ms cubic-bezier(0.23, 1, 0.32, 1), box-shadow 160ms ease',
+                      }}
+                    >
+                      <span style={{
+                        fontSize: key === '⌫' ? 22 : 28,
+                        fontWeight: key === '⌫' ? 400 : 500,
+                        color: key === '⌫' ? colors.textSecondary : colors.text,
+                      }}>
+                        {key === '⌫' ? '⌫' : key}
+                      </span>
+                    </motion.button>
+                  )
+                )}
+              </div>
             ))}
           </motion.div>
-        </AnimatePresence>
-      </motion.div>
-
-      {/* Numpad */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.4, duration: 0.6 }}
-        style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 32, position: 'relative', zIndex: 1 }}
-      >
-        {NUMPAD_KEYS.map((row, rIdx) => (
-          <div key={rIdx} style={{ display: 'flex', gap: 20, justifyContent: 'center' }}>
-            {row.map((key) =>
-              key === '' ? (
-                <div key="empty" style={{ width: KEY_SIZE, height: KEY_SIZE }} />
-              ) : (
-                <motion.button
-                  key={key}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => handleKeyPress(key)}
-                  aria-label={key === '⌫' ? 'Effacer' : `Chiffre ${key}`}
-                  style={{
-                    width: KEY_SIZE,
-                    height: KEY_SIZE,
-                    borderRadius: borderRadius.lg,
-                    backgroundColor: key === '⌫' ? 'transparent' : colors.surface,
-                    border: 'none',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    boxShadow: key === '⌫' ? 'none' : `0 2px 8px ${colors.shadow}`,
-                    fontFamily: 'inherit',
-                  }}
-                >
-                  <span style={{
-                    fontSize: key === '⌫' ? 22 : 28,
-                    fontWeight: key === '⌫' ? 400 : 500,
-                    color: key === '⌫' ? colors.textSecondary : colors.text,
-                  }}>
-                    {key === '⌫' ? '⌫' : key}
-                  </span>
-                </motion.button>
-              )
-            )}
-          </div>
-        ))}
-      </motion.div>
+        </>
+      )}
 
       {/* Erreur / Indice */}
       {errorMsg && (
@@ -399,8 +492,24 @@ export default function LockScreen() {
         </motion.p>
       )}
 
+      {/* Erreur réseau (serveur injoignable, déconnexion forcée…) */}
+      {authError && !errorMsg && (
+        <motion.p
+          initial={{ opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          style={{
+            fontSize: 13,
+            color: colors.error,
+            marginTop: spacing.lg,
+            textAlign: 'center',
+          }}
+        >
+          {authError}
+        </motion.p>
+      )}
+
       {/* Tentatives (mode déverrouillage uniquement) */}
-      {!isFirstLaunch && attempts > 0 && !errorMsg && (
+      {!isSetup && !isOnboarding && attempts > 0 && !errorMsg && (
         <p style={{
           fontSize: 13, color: colors.error, marginTop: spacing.lg,
         }}>

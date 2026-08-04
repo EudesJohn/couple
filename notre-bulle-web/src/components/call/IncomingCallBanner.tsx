@@ -123,7 +123,7 @@ export function IncomingCallBanner({
             }}>
               {/* Refuser */}
               <motion.button
-                whileTap={{ scale: 0.88 }}
+                whileTap={{ scale: 0.93 }}
                 onClick={onReject}
                 aria-label="Refuser"
                 style={{
@@ -144,7 +144,7 @@ export function IncomingCallBanner({
 
               {/* Répondre */}
               <motion.button
-                whileTap={{ scale: 0.88 }}
+                whileTap={{ scale: 0.93 }}
                 onClick={onAnswer}
                 aria-label="Répondre"
                 style={{

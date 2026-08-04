@@ -179,23 +179,41 @@ def _get_current_phase(today, past_cycles, future_cycles, avg_cycle):
 
 
 def _get_next_event(today, past_cycles, future_cycles):
+    """Trouve le prochain événement important (règles, ovulation, fertile).
+
+    La période en cours n'est pas un « prochain » événement : on ignore les
+    jours de règles qui suivent directement le début de cycle en cours, afin
+    d'afficher le prochain événement réellement à venir (ex. l'ovulation quand
+    on est en règles, ou les prochaines règles sinon).
+    """
     today_str = today.isoformat()
+    prev_was_period = False
     for cycle in future_cycles:
         if not cycle.get("days"):
             continue
         for day in cycle["days"]:
-            if day["date"] < today_str:
-                continue
             phase = day.get("phase", "normal")
-            if phase in ("period", "ovulation", "fertile") and day["date"] > today_str:
+            if day["date"] <= today_str:
+                # On mémorise la phase du dernier jour ≤ aujourd'hui pour
+                # savoir si une période est déjà en cours.
+                prev_was_period = (phase == "period")
+                continue
+            if phase == "period" and prev_was_period:
+                # Suite de la période déjà en cours → pas un nouvel événement
+                prev_was_period = True
+                continue
+            if phase in ("period", "ovulation", "fertile"):
                 event_date = datetime.strptime(day["date"], "%Y-%m-%d").date()
                 return {"date": day["date"], "phase": phase, "days_remaining": (event_date - today).days}
+            prev_was_period = False
+    # Repli : prochain début de cycle prédit (si aucun jour trouvé plus haut)
     if future_cycles:
-        next_start_str = future_cycles[0].get("start_date", "")
-        if next_start_str:
-            next_start = datetime.strptime(next_start_str, "%Y-%m-%d").date()
-            if next_start > today:
-                return {"date": next_start_str, "phase": "period", "days_remaining": (next_start - today).days}
+        for cycle in future_cycles:
+            next_start_str = cycle.get("start_date", "")
+            if next_start_str:
+                next_start = datetime.strptime(next_start_str, "%Y-%m-%d").date()
+                if next_start > today:
+                    return {"date": next_start_str, "phase": "period", "days_remaining": (next_start - today).days}
     return None
 
 
@@ -235,7 +253,23 @@ def _compute_reliability(lengths, filtered):
     return {"score": min(score, 100), "level": level, "cycles_analyzed": len(filtered), "message": msg}
 
 
-def predict_full(entries: List[Dict], period_length: int = DEFAULT_PERIOD_LENGTH, num_predictions: int = 3) -> Dict:
+def _parse_today(today_str: Optional[str]) -> date:
+    """Analyse la date « aujourd'hui » envoyée par le client (fuseau local).
+
+    Le serveur tourne en UTC (Vercel) alors que le client vit dans son fuseau
+    local. Pour que la carte « Aujourd'hui » soit cohérente avec les jours que
+    marque l'utilisatrice, on accepte la date locale du client et on retombe
+    sur date.today() si elle est absente ou invalide.
+    """
+    if today_str:
+        try:
+            return datetime.strptime(today_str, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            pass
+    return date.today()
+
+
+def predict_full(entries: List[Dict], period_length: int = DEFAULT_PERIOD_LENGTH, num_predictions: int = 3, today: Optional[str] = None) -> Dict:
     period_dates = get_period_dates(entries)
     groups = group_periods(period_dates)
     starts = [g[0] for g in groups]
@@ -247,7 +281,7 @@ def predict_full(entries: List[Dict], period_length: int = DEFAULT_PERIOD_LENGTH
     last_start = starts[-1] if starts else date.today()
     future_cycles = _build_future_cycles(last_start, avg_cycle, num_predictions, period_length)
 
-    today = date.today()
+    today = _parse_today(today)
     current_phase = _get_current_phase(today, past_cycles, future_cycles, avg_cycle)
     next_event = _get_next_event(today, past_cycles, future_cycles)
     reliability = _compute_reliability(lengths, lengths_filtered)
@@ -295,6 +329,51 @@ VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_CLAIM_EMAIL = os.environ.get("VAPID_CLAIM_EMAIL", "admin@notre-bulle.app")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+# Les deux profils du couple. L'app est utilisée par les 2 partenaires sur le
+# même téléphone ; ces IDs sont la source de vérité (identité + push), même si
+# conversation_members contient d'anciens IDs divergents.
+MY_PROFILE_ID = os.environ.get("VITE_MY_PROFILE_ID", "")
+PARTNER_PROFILE_ID = os.environ.get("VITE_PARTNER_PROFILE_ID", "")
+
+
+def resolve_couple_recipient(sender_id: str) -> Optional[str]:
+    """Renvoie le profil du partenaire : l'autre membre du couple.
+
+    Le destinataire d'un appel ou d'un message émis par l'un des deux profils
+    configurés est toujours l'autre profil. Indépendant de conversation_members,
+    qui contient des IDs historiques divergents (donc la résolution par
+    conversation renvoyait un profil sans abonnement push → total:0).
+    """
+    if not sender_id:
+        return None
+    if MY_PROFILE_ID and sender_id == MY_PROFILE_ID:
+        return PARTNER_PROFILE_ID or None
+    if PARTNER_PROFILE_ID and sender_id == PARTNER_PROFILE_ID:
+        return MY_PROFILE_ID or None
+    return None
+
+
+def derive_push_tag(data: Optional[Dict[str, Any]]) -> str:
+    """Tag de notification DISTINCT (évite le collision d'anciens tags).
+
+    Avant, TOUTES les notifications partageaient le tag 'notre-bulle' :
+    quand une notification de message arrivait pendant un appel entrant
+    (ou inversement), la 2e remplaçait la 1re SANS sonner ni vibrer.
+
+    Règles de dérivation :
+      - écran 'call'            → call-<callId> (ou call-incoming si absent)
+      - data.conversationId     → msg-<conversationId>
+      - sinon                   → notre-bulle (repli générique)
+    """
+    if not data:
+        return "notre-bulle"
+    if data.get("screen") == "call":
+        call_id = data.get("callId")
+        return f"call-{call_id}" if call_id else "call-incoming"
+    conv_id = data.get("conversationId")
+    if conv_id:
+        return f"msg-{conv_id}"
+    return "notre-bulle"
 
 
 def get_supabase_headers() -> Dict[str, str]:
@@ -306,11 +385,15 @@ def get_supabase_headers() -> Dict[str, str]:
     }
 
 
-async def store_subscription(profile_id: str, endpoint: str, p256dh_key: str, auth_key: str) -> bool:
-    """Stoque un abonnement push dans Supabase."""
+async def store_subscription(profile_id: str, endpoint: str, p256dh_key: str, auth_key: str) -> Tuple[bool, str]:
+    """Stoque un abonnement push dans Supabase.
+
+    Retourne (ok, detail) : detail explique la raison en cas d'échec
+    (utile pour diagnostiquer les problèmes de persistence RLS).
+    """
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         logger.warning("Supabase non configuré — subscription non persistée")
-        return False
+        return False, "Supabase non configuré"
 
     url = f"{SUPABASE_URL}/rest/v1/push_subscriptions"
     headers = get_supabase_headers()
@@ -336,13 +419,22 @@ async def store_subscription(profile_id: str, endpoint: str, p256dh_key: str, au
                 headers=headers,
                 json=data,
             )
-            return patch_resp.status_code in (200, 204)
+            ok = patch_resp.status_code in (200, 204)
+            return ok, ("subscription à jour" if ok else f"échec UPDATE → HTTP {patch_resp.status_code}")
         else:
             # Création
             data["id"] = str(uuid.uuid4())
             data["created_at"] = datetime.utcnow().isoformat()
             post_resp = await client.post(url, headers=headers, json=data)
-            return post_resp.status_code in (200, 201, 204)
+            ok = post_resp.status_code in (200, 201, 204)
+            detail = "subscription créée" if ok else f"échec INSERT → HTTP {post_resp.status_code}"
+            if not ok:
+                try:
+                    detail += f" — {post_resp.text[:200]}"
+                except Exception:
+                    pass
+                logger.error(f"push_subscriptions INSERT refusé: {detail}")
+            return ok, detail
 
 
 async def get_subscriptions(profile_id: str) -> List[Dict]:
@@ -393,6 +485,47 @@ async def get_conversation_recipient(conv_id: str, sender_id: str) -> Optional[s
                 return member["profile_id"]
 
     logger.warning(f"Aucun destinataire trouvé dans conv {conv_id} (sender={sender_id})")
+    return None
+
+
+async def get_default_conversation_recipient(caller_id: str) -> Optional[str]:
+    """Trouve le destinataire d'un appel : l'autre membre de la conversation.
+
+    Le schéma est un couple avec une seule conversation (le client prend
+    la première via `limit(1)`). On récupère cette conversation puis on
+    renvoie le membre qui n'est pas l'appelant.
+    """
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        return None
+
+    headers = get_supabase_headers()
+
+    async with httpx.AsyncClient() as client:
+        # 1. La conversation du couple (il n'y en a qu'une)
+        conv_resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/conversations?select=id&limit=1",
+            headers=headers,
+        )
+        if conv_resp.status_code != 200 or not conv_resp.json():
+            logger.warning(f"Erreur récupération conversation pour l'appel: HTTP {conv_resp.status_code}")
+            return None
+        conv_id = conv_resp.json()[0]["id"]
+
+        # 2. Les membres → renvoyer l'autre (≠ caller_id)
+        members_resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/conversation_members?conversation_id=eq.{quote(conv_id)}&select=profile_id",
+            headers=headers,
+        )
+        if members_resp.status_code != 200:
+            logger.warning(f"Erreur récupération membres conv {conv_id}: {members_resp.status_code}")
+            return None
+
+        members = members_resp.json()
+        for member in members:
+            if member.get("profile_id") != caller_id:
+                return member["profile_id"]
+
+    logger.warning(f"Aucun destinataire pour l'appel (caller={caller_id})")
     return None
 
 
@@ -455,6 +588,9 @@ class PredictionRequest(BaseModel):
     entries: List[CycleEntryIn]
     period_length: int = 5
     num_predictions: int = 3
+    # Date locale du client (AAAA-MM-JJ). Optionnelle : si absente, le serveur
+    # utilise date.today() (UTC). La passer évite les décalages de fuseau.
+    today: Optional[str] = None
 
 
 _db: List[Dict[str, Any]] = []
@@ -478,7 +614,12 @@ def health():
 @app.post("/api/predict")
 def predict_cycle(request: PredictionRequest):
     entries = [e.model_dump() for e in request.entries]
-    return predict_full(entries=entries, period_length=request.period_length, num_predictions=request.num_predictions)
+    return predict_full(
+        entries=entries,
+        period_length=request.period_length,
+        num_predictions=request.num_predictions,
+        today=request.today,
+    )
 
 
 @app.post("/api/demo/seed")
@@ -512,20 +653,22 @@ async def push_subscribe(request: PushSubscribeIn):
     if not request.profile_id or not request.endpoint:
         raise HTTPException(status_code=400, detail="profile_id et endpoint requis")
 
-    ok = await store_subscription(
+    ok, detail = await store_subscription(
         profile_id=request.profile_id,
         endpoint=request.endpoint,
         p256dh_key=request.p256dh_key,
         auth_key=request.auth_key,
     )
 
-    if ok:
-        return {"status": "ok", "message": "Subscription enregistrée"}
-    else:
-        # Même si Supabase n'est pas dispo, l'abonnement est actif côté navigateur
-        # Il sera réutilisé au prochain envoi
-        logger.warning("Subscription non persistée (Supabase non configuré ou erreur)")
-        return {"status": "ok", "message": "Subscription locale (non persistée)"}
+    if not ok:
+        # IMPORTANT : renvoyer une vraie erreur (500) si l'abonnement n'est pas
+        # persisté en base. Avant, on renvoyait 200 même en cas d'échec → la
+        # table push_subscriptions restait vide → aucun push envoyé quand l'app
+        # est fermée (seul Realtime fonctionnait quand elle était ouverte).
+        logger.error(f"Subscription push non persistée: {detail}")
+        raise HTTPException(status_code=500, detail=f"Erreur enregistrement subscription: {detail}")
+
+    return {"status": "ok", "message": "Subscription enregistrée"}
 
 
 @app.post("/api/push/notify")
@@ -546,12 +689,15 @@ async def push_notify(request: PushNotifyIn):
         logger.info(f"Aucune subscription push pour {request.recipient_profile_id}")
         return {"status": "ok", "sent": 0, "total": 0}
 
-    # Payload à envoyer
+    # Payload à envoyer — tag distinct dérivé des data (call-<callId>,
+    # msg-<conversationId>…) pour ne jamais écraser une notification d'appel
+    # par une notification de message (ni l'inverse).
+    data = request.data or {}
     payload = {
         "title": request.title,
         "body": request.body,
-        "data": request.data or {},
-        "tag": "notre-bulle",
+        "data": data,
+        "tag": derive_push_tag(data),
     }
     payload_bytes = json.dumps(payload).encode("utf-8")
 
@@ -611,8 +757,9 @@ async def push_on_new_message(
     if not conv_id or not sender_id:
         return {"status": "ignored", "reason": "missing conversation_id or sender_id"}
 
-    # Trouver le destinataire
-    recipient_id = await get_conversation_recipient(conv_id, sender_id)
+    # Trouver le destinataire — les IDs configurés d'abord (même raison que
+    # pour les appels : conversation_members est divergent)
+    recipient_id = resolve_couple_recipient(sender_id) or await get_conversation_recipient(conv_id, sender_id)
     if not recipient_id:
         logger.info(f"Aucun destinataire pour le message {record.get('id')}")
         return {"status": "ok", "sent": 0, "total": 0}
@@ -637,7 +784,9 @@ async def push_on_new_message(
         logger.info(f"Aucune subscription push pour {recipient_id}")
         return {"status": "ok", "sent": 0, "total": 0}
 
-    # Payload push
+    # Payload push — tag distinct msg-<conversationId> : deux messages dans la
+    # même conversation partagent le même tag (remplacement propre) mais une
+    # notification d'appel entrant (call-<callId>) ne sera jamais écrasée.
     push_payload = {
         "title": sender_name,
         "body": body,
@@ -645,7 +794,7 @@ async def push_on_new_message(
             "screen": "chat",
             "conversationId": conv_id,
         },
-        "tag": "notre-bulle",
+        "tag": f"msg-{conv_id}",
     }
     payload_bytes = json.dumps(push_payload).encode("utf-8")
 
@@ -669,6 +818,101 @@ async def push_on_new_message(
         except Exception as e:
             errors.append(str(e))
             logger.error(f"Erreur envoi push webhook à {sub['endpoint'][:50]}...: {e}")
+
+    return {
+        "status": "ok",
+        "sent": sent_count,
+        "total": len(subscriptions),
+        "errors": errors if errors else None,
+    }
+
+
+@app.post("/api/push/on-new-call")
+async def push_on_new_call(
+    payload: WebhookPayload,
+    x_supabase_secret: Optional[str] = Header(None, alias="X-Supabase-Secret"),
+):
+    """
+    Endpoint appelé par le trigger DB à chaque INSERT dans la table 'calls'.
+    Envoie une notification push d'appel entrant au partenaire, avec
+    `screen: 'call'` pour que le service worker navigue vers /call.
+    """
+    # Vérifier le secret partagé (si configuré)
+    if WEBHOOK_SECRET and x_supabase_secret != WEBHOOK_SECRET:
+        logger.warning("Tentative d'accès webhook call avec secret invalide")
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+
+    if payload.type != "INSERT" or payload.table != "calls":
+        return {"status": "ignored", "reason": "type or table mismatch"}
+
+    record = payload.record
+    if not record or not record.get("id"):
+        return {"status": "ignored", "reason": "empty record"}
+
+    # Le client insère un appel avec status 'missed' (= en attente de réponse
+    # dans ce schéma). Uniquement ce statut correspond à un appel entrant.
+    if record.get("status") != "missed":
+        return {"status": "ignored", "reason": "call not pending"}
+
+    caller_id = record.get("caller_id")
+    call_type = record.get("type", "audio")
+    if not caller_id:
+        return {"status": "ignored", "reason": "missing caller_id"}
+
+    # Trouver le destinataire (l'autre membre du couple). On passe d'abord par
+    # les IDs configurés (source de vérité) — conversation_members contient des
+    # IDs historiques divergents, sans abonnement push.
+    recipient_id = resolve_couple_recipient(caller_id) or await get_default_conversation_recipient(caller_id)
+    if not recipient_id:
+        logger.info(f"Aucun destinataire pour l'appel {record.get('id')}")
+        return {"status": "ok", "sent": 0, "total": 0}
+
+    # Nom de l'appelant
+    caller_profile = await get_sender_profile(caller_id)
+    caller_name = caller_profile.get("display_name", "Partenaire") if caller_profile else "Partenaire"
+
+    # Souscriptions push du destinataire
+    subscriptions = await get_subscriptions(recipient_id)
+    if not subscriptions:
+        logger.info(f"Aucune subscription push pour {recipient_id}")
+        return {"status": "ok", "sent": 0, "total": 0}
+
+    type_label = "Video" if call_type == "video" else "Audio"
+    call_id = record.get("id")
+    push_payload = {
+        "title": f"Appel {type_label}",
+        "body": f"{caller_name} t'appelle...",
+        "data": {
+            "screen": "call",
+            "callType": call_type,
+            "callId": call_id,
+        },
+        # Tag unique par appel : call-<callId>. Une nouvelle notification
+        # remplace proprement celle d'un appel précédent, sans jamais être
+        # écrasée par un message (msg-<conversationId>).
+        "tag": f"call-{call_id}",
+    }
+    payload_bytes = json.dumps(push_payload).encode("utf-8")
+
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+        logger.error("VAPID keys non configurées — push impossible")
+        return {"status": "ok", "sent": 0, "total": 0, "warning": "VAPID not configured"}
+
+    sent_count = 0
+    errors = []
+
+    for sub in subscriptions:
+        try:
+            await _send_single_push(
+                endpoint=sub["endpoint"],
+                p256dh_key=sub["p256dh_key"],
+                auth_key=sub["auth_key"],
+                payload_bytes=payload_bytes,
+            )
+            sent_count += 1
+        except Exception as e:
+            errors.append(str(e))
+            logger.error(f"Erreur envoi push call à {sub['endpoint'][:50]}...: {e}")
 
     return {
         "status": "ok",

@@ -110,7 +110,7 @@ export function VoiceRecorder({
       {/* Stop / Send */}
       {isRecording ? (
         <motion.button
-          whileTap={{ scale: 0.9 }}
+          whileTap={{ scale: 0.94 }}
           onClick={onStop}
           style={{
             width: 44, height: 44, borderRadius: 22, border: 'none', cursor: 'pointer',
@@ -124,7 +124,7 @@ export function VoiceRecorder({
         </motion.button>
       ) : (
         <motion.button
-          whileTap={{ scale: 0.9 }}
+          whileTap={{ scale: 0.94 }}
           onClick={onSend}
           style={{
             width: 44, height: 44, borderRadius: 22, border: 'none', cursor: 'pointer',

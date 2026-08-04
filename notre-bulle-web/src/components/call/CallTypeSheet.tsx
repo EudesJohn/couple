@@ -24,9 +24,9 @@ function CallOption({
 }) {
   return (
     <motion.div
-      initial={{ scale: 0, opacity: 0 }}
+      initial={{ scale: 0.95, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
-      transition={{ type: 'spring', damping: 10, stiffness: 120, delay }}
+      transition={{ type: 'spring', damping: 14, stiffness: 180, delay }}
     >
       <button
         onClick={onPress}

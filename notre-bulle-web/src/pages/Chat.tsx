@@ -42,20 +42,20 @@ function DateSeparator({ date }: { date: string }) {
       padding: `${spacing.md}px ${spacing.xl}px`,
       gap: spacing.md,
     }}>
-      <div style={{ flex: 1, height: 1, backgroundColor: staticColors.border }} />
+      <div style={{ flex: 1, height: 1, backgroundColor: staticColors.borderLight }} />
       <span style={{ fontSize: 12, color: staticColors.textTertiary, textTransform: 'capitalize' }}>
         {formatDateSeparator(date)}
       </span>
-      <div style={{ flex: 1, height: 1, backgroundColor: staticColors.border }} />
+      <div style={{ flex: 1, height: 1, backgroundColor: staticColors.borderLight }} />
     </div>
   );
 }
 
 export default function ChatScreen() {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { messages, sendText, sendVoice, sendImage, deleteMessage, isLoading, isUploading, uploadProgress, myProfileId, error, isRefreshing, refreshMessages } = useMessages();
+  const { messages, sendText, sendVoice, sendImage, sendImages, deleteMessage, editMessage, isLoading, isUploading, uploadProgress, myProfileId, error, isRefreshing, refreshMessages } = useMessages();
   const { setIsTyping, partnerPresence } = usePresence();
-  const { pickImage, takePhoto } = useMediaPicker();
+  const { pickImages, takePhoto } = useMediaPicker();
   const { bubbleSelf, bubbleOther, bg, backgroundImage } = useTheme();
 
   const isPartnerTyping = partnerPresence?.is_typing ?? false;
@@ -174,11 +174,15 @@ export default function ChatScreen() {
   }, [sendVoice]);
 
   const handleSendImage = useCallback(async () => {
-    const media = await pickImage();
-    if (media) {
-      sendImage(media.uri, media.mimeType, media.width, media.height);
+    // Sélection multiple : le picker natif laisse choisir plusieurs photos.
+    // Chaque photo est envoyée à la suite (progression globale dans sendImages).
+    const mediaList = await pickImages();
+    if (mediaList && mediaList.length > 0) {
+      sendImages(mediaList.map((m) => ({
+        uri: m.uri, mimeType: m.mimeType, width: m.width, height: m.height,
+      })));
     }
-  }, [pickImage, sendImage]);
+  }, [pickImages, sendImages]);
 
   const handleTakePhoto = useCallback(async () => {
     const media = await takePhoto();
@@ -286,8 +290,8 @@ export default function ChatScreen() {
           pointerEvents: 'none',
         }}>
           <motion.button
-            whileTap={{ scale: 0.85 }}
-            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.93 }}
+            whileHover={{ scale: 1.05 }}
             onClick={(e) => {
               e.stopPropagation();
               refreshMessages();
@@ -395,6 +399,8 @@ export default function ChatScreen() {
                   onImageClick={handleOpenImage}
                   onVideoExpand={handleOpenVideo}
                   onDelete={deleteMessage}
+                  onReply={() => setReplyTarget(msg)}
+                  onEdit={(newContent) => editMessage(msg.id, newContent)}
                 />
               </div>
             );
@@ -436,11 +442,13 @@ export default function ChatScreen() {
           backgroundColor: staticColors.border,
         }}>
           <motion.div
-            initial={{ width: 0 }}
-            animate={{ width: `${uploadProgress}%` }}
+            initial={{ scaleX: 0 }}
+            animate={{ scaleX: (uploadProgress || 0) / 100 }}
             transition={{ duration: 0.3, ease: 'easeOut' }}
             style={{
               height: '100%',
+              width: '100%',
+              transformOrigin: 'left',
               background: `linear-gradient(90deg, ${staticColors.primary}, ${staticColors.accent})`,
               borderRadius: 1.5,
             }}

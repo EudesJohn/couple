@@ -53,14 +53,37 @@ self.addEventListener('push', (event) => {
     if (text) body = text;
   }
 
+  // ⚠️ TAG DISTINCT — dérivé des data même si le serveur n'a pas fourni de
+  // tag : un appel entrant (call-<callId>) ne doit JAMAIS être écrasé par une
+  // notification de message (msg-<conversationId>) qui partageait l'ancien
+  // tag commun 'notre-bulle' (le remplacement aurait coupé le son/vibreur).
+  if (data?.screen === 'call') {
+    tag = data?.callId ? `call-${String(data.callId)}` : 'call-incoming';
+  } else if (data?.conversationId) {
+    tag = `msg-${String(data.conversationId)}`;
+  }
+
+  // Vibration différenciée : appel entrant = alarme longue qui se répète,
+  // message = petit bip court. (Le son personnalisé n'est pas jouable par
+  // une notification Web Push — limite plateforme. On maximise la vibration
+  // + le son système par défaut du navigateur.)
+  const isCall = data?.screen === 'call';
   const options: NotificationOptions = {
     body,
     icon: '/icon-192.png',
     badge: '/icon-192.png',
     tag,
     data,
-    vibrate: [200, 100, 200],
+    // Vibration différenciée : appel entrant = alarme longue qui se répète,
+    // message = petit bip court. (Le son personnalisé n'est pas jouable par
+    // une notification Web Push — limite plateforme. On maximise la vibration
+    // + le son système par défaut du navigateur.)
+    vibrate: isCall ? [400, 200, 400, 200, 900] : [200, 100, 200],
     requireInteraction: true,
+    // Pas de renotify : chaque appel a un tag unique (call-<callId>), donc le
+    // drapeau ne se déclenche jamais (il exige de REMPLACER une notification
+    // existante du même tag). Sur Chrome Android, il peut en plus inhiber la
+    // vibration sur la 1re notification — on le retire.
     // silent: false — laisser le système jouer le son par défaut
   };
 
@@ -79,8 +102,17 @@ self.addEventListener('notificationclick', (event) => {
   // Si la notification vient d'un appel entrant, naviguer vers la page call
   if (notifData?.screen === 'call') {
     urlToOpen.pathname = '/call';
+    // Transmettre callId/type/role pour que CallScreen se monte en
+    // mode répondant (role=callee → initie l'offre WebRTC).
+    if (notifData?.callId) {
+      urlToOpen.searchParams.set('callId', String(notifData.callId));
+      if (notifData?.callType) urlToOpen.searchParams.set('type', String(notifData.callType));
+      urlToOpen.searchParams.set('role', 'callee');
+    }
   } else if (notifData?.conversationId || notifData?.screen === 'chat') {
-    urlToOpen.pathname = '/';
+    // Nouveau message → ouvrir le chat directement.
+    // Si l'app est verrouillée, RequireAuth redirige vers l'écran de verrou.
+    urlToOpen.pathname = '/chat';
   }
 
   event.waitUntil(

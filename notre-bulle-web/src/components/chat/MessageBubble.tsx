@@ -3,13 +3,14 @@
 // Design premium, secondes, statuts (envoyé/distribué/lu)
 // ============================================================
 import { motion } from 'framer-motion';
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { colors, spacing, borderRadius } from '../../constants/theme';
 import { VoiceNoteBubble } from '../media/VoiceNoteBubble';
 import { StorageImage } from '../media/StorageImage';
 import { VideoBubble } from '../media/VideoBubble';
 import { getMediaType } from '../../lib/media';
-import { DoubleCheckIcon, ReplyIcon, PhoneIcon, VideoIcon, PhoneOffIcon, TrashIcon } from '../Icons';
+import { CheckIcon, DoubleCheckIcon, ReplyIcon, PhoneIcon, VideoIcon, PhoneOffIcon, TrashIcon, EditIcon } from '../Icons';
+import { SwipeToReply } from './SwipeToReply';
 import type { MessageWithDetails } from '../../types/database';
 
 interface MessageBubbleProps {
@@ -22,6 +23,8 @@ interface MessageBubbleProps {
   onImageClick?: (storagePath: string) => void;
   onVideoExpand?: (storagePath: string, mimeType: string) => void;
   onDelete?: (messageId: string) => void;
+  onReply?: () => void;
+  onEdit?: (newContent: string) => void;
 }
 
 function formatTime(createdAt: string): string {
@@ -32,29 +35,30 @@ function formatTime(createdAt: string): string {
 }
 
 function MessageStatus({ statuses, myProfileId }: { statuses: any[]; myProfileId: string | null }) {
-  if (!statuses || statuses.length === 0) return null;
-
+  const statusesArr = statuses || [];
   const partnerStatuses = myProfileId
-    ? statuses.filter((s) => s.profile_id !== myProfileId)
-    : statuses;
+    ? statusesArr.filter((s) => s.profile_id !== myProfileId)
+    : statusesArr;
 
-  if (partnerStatuses.length === 0) return null;
+  // Pas encore de confirmation du partenaire → "envoyé" (coche simple)
+  const sentCheck = <CheckIcon size={14} color="rgba(255,255,255,0.45)" />;
+  if (partnerStatuses.length === 0) return sentCheck;
 
   const statusOrder = ['sent', 'delivered', 'read'];
   const highestStatus = partnerStatuses.reduce((max, s) => {
     return statusOrder.indexOf(s.status) > statusOrder.indexOf(max.status) ? s : max;
   }, partnerStatuses[0]);
 
-  if (highestStatus.status === 'sent') {
-    return <DoubleCheckIcon size={14} color="rgba(255,255,255,0.4)" />;
-  }
   if (highestStatus.status === 'delivered') {
+    // Deux coches : le partenaire a reçu/téléchargé le message
     return <DoubleCheckIcon size={14} color="rgba(255,255,255,0.6)" />;
   }
   if (highestStatus.status === 'read') {
-    return <DoubleCheckIcon size={14} color="#34B759" />;
+    // Deux coches colorées (or) : lecture confirmée
+    return <DoubleCheckIcon size={14} color={colors.accentLight} />;
   }
-  return null;
+  // 'sent' (ou statut inconnu) → coche simple
+  return sentCheck;
 }
 
 function QuotedMessage({ replyTo, isOwn }: { replyTo: NonNullable<MessageWithDetails['reply_to_message']>; isOwn: boolean }) {
@@ -129,9 +133,9 @@ function CallLogBubble({ message, isOwn, selfColor, otherColor }: {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12, scale: 0.97 }}
+      initial={{ opacity: 0, y: 8, scale: 0.99 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      transition={{ duration: 0.35, ease: [0.25, 0.1, 0.25, 1] }}
+      transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
       style={{
         display: 'flex',
         justifyContent: isOwn ? 'flex-end' : 'flex-start',
@@ -200,9 +204,12 @@ function useLongPress(
   } as const;
 }
 
-export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSelfColor, bubbleOtherColor, onImageClick, onVideoExpand, onDelete }: MessageBubbleProps) {
+export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSelfColor, bubbleOtherColor, onImageClick, onVideoExpand, onDelete, onReply, onEdit }: MessageBubbleProps) {
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(message.content || '');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   const handleDelete = useCallback(() => {
     onDelete?.(message.id);
@@ -211,9 +218,33 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
   }, [onDelete, message.id]);
 
   const longPressHandlers = useLongPress(() => {
-    // Seulement les propres messages peuvent être supprimés
-    if (isOwn && onDelete) setShowDeleteMenu(true);
+    // Menu actions : supprimer ET modifier (texte, messages personnels uniquement)
+    if (isOwn && (onDelete || (onEdit && message.type === 'text'))) setShowDeleteMenu(true);
   });
+
+  // Commencer l'édition inline
+  const startEditing = useCallback(() => {
+    setEditText(message.content || '');
+    setIsEditing(true);
+    setShowDeleteMenu(false);
+    setConfirmDelete(false);
+  }, [message.content]);
+
+  // Enregistrer la modification
+  const saveEdit = useCallback(async () => {
+    const trimmed = editText.trim();
+    if (!trimmed || trimmed === message.content) {
+      setIsEditing(false);
+      return;
+    }
+    setIsSavingEdit(true);
+    try {
+      if (onEdit) await onEdit(trimmed);
+      setIsEditing(false);
+    } finally {
+      setIsSavingEdit(false);
+    }
+  }, [editText, message.content, onEdit]);
 
   const attachments = message.attachments || [];
   const hasAttachment = attachments.length > 0;
@@ -222,6 +253,7 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
   const selfColor = bubbleSelfColor || colors.bubbleSelf;
   const otherColor = bubbleOtherColor || colors.bubbleOther;
   const hasReply = !!message.reply_to_message?.id;
+  const isSwipable = !!onReply && !isEditing && message.type !== 'call';
 
   const bubbleContent = (() => {
     // Journal d'appel → rendu spécial
@@ -231,7 +263,7 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
 
     return (
       <div style={{
-        maxWidth: '78%',
+        maxWidth: isSwipable ? '100%' : '78%',
         backgroundColor: isOwn ? selfColor : otherColor,
         padding: `${spacing.md}px ${spacing.lg}px`,
         borderRadius: borderRadius.lg,
@@ -257,6 +289,7 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
             <StorageImage
               storagePath={attachment.storage_path}
               alt="Media"
+              requireDownload
               style={{ width: 240, height: 200, objectFit: 'cover', display: 'block' }}
               onClick={onImageClick ? () => onImageClick(attachment.storage_path) : undefined}
             />
@@ -275,6 +308,7 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
             <VideoBubble
               storagePath={attachment.storage_path}
               mimeType={attachment.mime_type}
+              requireDownload
               onExpand={onVideoExpand ? (blobUrl, mt) => onVideoExpand(attachment.storage_path, mt) : undefined}
             />
           </div>
@@ -287,20 +321,84 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
             durationMs={attachment.duration_ms || 0}
             isOwn={isOwn}
             bubbleSelfColor={selfColor}
+            requireDownload
           />
         )}
 
-        {/* Texte */}
-        {message.content && (
-          <span style={{
-            fontSize: 16, lineHeight: '22px',
-            color: isOwn ? colors.bubbleSelfText : colors.text,
-          }}>
-            {message.content}
-          </span>
+        {/* Texte — avec mode édition inline */}
+        {message.type === 'text' && isEditing ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 200 }}>
+            <textarea
+              autoFocus
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  saveEdit();
+                }
+                if (e.key === 'Escape') setIsEditing(false);
+              }}
+              rows={2}
+              style={{
+                width: '100%',
+                fontSize: 15,
+                fontFamily: 'inherit',
+                color: isOwn ? colors.bubbleSelfText : colors.text,
+                backgroundColor: isOwn ? 'rgba(0,0,0,0.18)' : '#FFFFFF',
+                border: `1px solid ${isOwn ? 'rgba(255,255,255,0.4)' : colors.border}`,
+                borderRadius: borderRadius.sm,
+                padding: 8,
+                outline: 'none',
+                resize: 'none',
+              }}
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setIsEditing(false)}
+                disabled={isSavingEdit}
+                style={{
+                  backgroundColor: 'transparent',
+                  color: isOwn ? 'rgba(255,255,255,0.8)' : colors.textSecondary,
+                  border: isOwn ? '1px solid rgba(255,255,255,0.4)' : `1px solid ${colors.border}`,
+                  borderRadius: borderRadius.sm,
+                  padding: '5px 12px',
+                  fontSize: 12, fontWeight: 500,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                Annuler
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={isSavingEdit || !editText.trim()}
+                style={{
+                  backgroundColor: colors.primary,
+                  color: '#FAFAF9',
+                  border: 'none',
+                  borderRadius: borderRadius.sm,
+                  padding: '5px 12px',
+                  fontSize: 12, fontWeight: 600,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                  opacity: isSavingEdit || !editText.trim() ? 0.5 : 1,
+                }}
+              >
+                {isSavingEdit ? 'Enregistrement…' : 'Enregistrer'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          message.content && (
+            <span style={{
+              fontSize: 16, lineHeight: '22px',
+              color: isOwn ? colors.bubbleSelfText : colors.text,
+            }}>
+              {message.content}
+            </span>
+          )
         )}
 
-        {/* Heure + Statut */}
+        {/* Heure + Statut + "Modifié" */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
@@ -308,6 +406,14 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
           gap: 4,
           marginTop: 4,
         }}>
+          {message.type === 'text' && message.edited_at && (
+            <span style={{
+              fontSize: 10, fontStyle: 'italic',
+              color: isOwn ? 'rgba(255,255,255,0.55)' : colors.textTertiary,
+            }}>
+              Modifié
+            </span>
+          )}
           <span style={{
             fontSize: 11,
             color: isOwn ? 'rgba(255,255,255,0.6)' : colors.textTertiary,
@@ -322,18 +428,42 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
     );
   })();
 
+  // Référence au conteneur principal pour détecter un appui hors du menu
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const closeMenu = useCallback(() => {
+    setShowDeleteMenu(false);
+    setConfirmDelete(false);
+  }, []);
+
+  // Fermer le menu quand on appuie dans le vide (hors de la bulle + boutons).
+  // On écoute pointerdown sur document : si la cible n'est pas dans le
+  // conteneur, on referme. Évite les problèmes de position:fixed à
+  // l'intérieur de conteneurs transformés (framer-motion scale).
+  useEffect(() => {
+    if (!showDeleteMenu) return;
+    const closeOnOutsideTap = (e: PointerEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        closeMenu();
+      }
+    };
+    document.addEventListener('pointerdown', closeOnOutsideTap);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideTap);
+  }, [showDeleteMenu, closeMenu]);
+
   // Appliquer les handlers long-press sur le conteneur principal
   return (
     <div
-      {...(isOwn && onDelete ? longPressHandlers : {})}
-      style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+      ref={containerRef}
+      {...(isOwn && (onDelete || (onEdit && message.type === 'text')) ? longPressHandlers : {})}
+      style={{ userSelect: 'none', WebkitUserSelect: 'none', position: 'relative' }}
     >
       <motion.div
-        initial={{ opacity: 0, y: 12, scale: 0.97 }}
+        initial={{ opacity: 0, y: 8, scale: 0.99 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{
-          duration: 0.35,
-          delay: Math.min(index * 0.025, 0.3),
+          duration: 0.25,
+          delay: Math.min(index * 0.02, 0.12),
           ease: [0.25, 0.1, 0.25, 1],
         }}
         style={{
@@ -343,7 +473,13 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
           padding: `0 ${spacing.lg}px`,
         }}
       >
-        {bubbleContent}
+        {isSwipable ? (
+          <SwipeToReply onReply={() => onReply?.()} style={{ width: 'fit-content', maxWidth: '78%' }}>
+            {bubbleContent}
+          </SwipeToReply>
+        ) : (
+          bubbleContent
+        )}
       </motion.div>
 
       {/* ─── Barre de suppression (élégante, en dessous de la bulle) ─── */}
@@ -399,24 +535,47 @@ export function MessageBubble({ message, isOwn, index = 0, myProfileId, bubbleSe
               </button>
             </div>
           ) : (
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.92 }}
-              onClick={() => setConfirmDelete(true)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 5,
-                backgroundColor: `${colors.error}10`,
-                border: `1px solid ${colors.error}25`,
-                borderRadius: borderRadius.md,
-                padding: `${spacing.xs}px ${spacing.md}px`,
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}
-            >
-              <TrashIcon size={14} color={colors.error} />
-              <span style={{ fontSize: 13, color: colors.error, fontWeight: 600 }}>
-                Supprimer
-              </span>
-            </motion.button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {/* Modifier — texte uniquement */}
+              {message.type === 'text' && onEdit && (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={startEditing}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    backgroundColor: `${colors.primary}10`,
+                    border: `1px solid ${colors.primary}25`,
+                    borderRadius: borderRadius.md,
+                    padding: `${spacing.xs}px ${spacing.md}px`,
+                    cursor: 'pointer', fontFamily: 'inherit',
+                  }}
+                >
+                  <EditIcon size={14} color={colors.primary} />
+                  <span style={{ fontSize: 13, color: colors.primary, fontWeight: 600 }}>
+                    Modifier
+                  </span>
+                </motion.button>
+              )}
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setConfirmDelete(true)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  backgroundColor: `${colors.error}10`,
+                  border: `1px solid ${colors.error}25`,
+                  borderRadius: borderRadius.md,
+                  padding: `${spacing.xs}px ${spacing.md}px`,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                <TrashIcon size={14} color={colors.error} />
+                <span style={{ fontSize: 13, color: colors.error, fontWeight: 600 }}>
+                  Supprimer
+                </span>
+              </motion.button>
+            </div>
           )}
         </motion.div>
       )}

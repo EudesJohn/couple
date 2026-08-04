@@ -16,6 +16,8 @@ import {
   saveCycleEntry,
   deleteCycleEntry,
   fetchPredictions,
+  computeLocalPrediction,
+  computeLocalCurrentPhase,
   generateCalendarGrid,
   formatDateStr,
   PHASE_COLORS,
@@ -41,15 +43,18 @@ const DAYS_FR = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
 function useCycleData() {
   const [profileId, setProfileId] = useState<string | null>(null);
   const [entries, setEntries] = useState<CycleEntry[]>([]);
-  const [prediction, setPrediction] = useState<PredictionResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [predicting, setPredicting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Résultat serveur, associé à l'instantané d'`entries` qui l'a généré.
+  const [serverResult, setServerResult] = useState<{ entries: CycleEntry[]; result: PredictionResult } | null>(null);
 
   // Réf pour éviter les closures obsolètes (race condition clic rapide → 409)
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
   const processingRef = useRef<Set<string>>(new Set());
+  // Garde anti-course : seul le dernier appel à fetchPredictions gagne.
+  const predictionRequestId = useRef(0);
 
   // Charger le profil
   useEffect(() => {
@@ -87,14 +92,43 @@ function useCycleData() {
     load();
   }, [profileId]);
 
-  // Prédiction
+  // Prédiction locale immédiate — source de vérité pour la phase en cours,
+  // calculée de façon synchrone depuis `entries` (aucun round-trip réseau).
+  const localPrediction = useMemo(() => computeLocalPrediction(entries), [entries]);
+
+  // Prédiction affichée : résultat serveur à jour, sinon calcul local.
+  // → mise à jour IMMÉDIATE dès qu'un jour est marqué, même si l'API est
+  // lente ou injoignable (fetchPredictions renvoie null).
+  const prediction = useMemo(() => {
+    if (serverResult && serverResult.entries === entries) return serverResult.result;
+    return localPrediction;
+  }, [serverResult, localPrediction, entries]);
+
+  // Prédiction serveur — garde anti-course (seul le dernier fetch gagne) :
+  // un résultat obsolète ne peut pas écraser une prédiction plus récente.
   useEffect(() => {
-    if (entries.length === 0 || !profileId) return;
+    if (entries.length === 0 || !profileId) {
+      setServerResult(null);
+      setPredicting(false);
+      return;
+    }
+    const requestId = ++predictionRequestId.current;
+    const snapshot = entries;
     setPredicting(true);
-    fetchPredictions(entries)
-      .then(setPrediction)
+    // On envoie la date locale du client pour rester cohérent avec le fuseau.
+    fetchPredictions(entries, 5, formatDateStr(new Date()))
+      .then((result) => {
+        // Résultat obsolète → ignoré (un marquage plus récent est en cours)
+        if (predictionRequestId.current !== requestId) return;
+        if (result) {
+          setServerResult({ entries: snapshot, result });
+        }
+        // Si l'API renvoie null (injoignable), on conserve la prédiction locale.
+      })
       .catch(() => {})
-      .finally(() => setPredicting(false));
+      .finally(() => {
+        if (predictionRequestId.current === requestId) setPredicting(false);
+      });
   }, [entries, profileId]);
 
   const togglePeriodDay = useCallback(async (dateStr: string) => {
@@ -388,7 +422,7 @@ export default function CycleCalendar() {
           </button>
           <motion.button
             whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
+            whileTap={{ scale: 0.97 }}
             onClick={goToday}
             style={{
               background: 'none', border: 'none', cursor: 'pointer',
@@ -531,13 +565,22 @@ function TodayCard({
 }) {
   const todayStr = formatDateStr(new Date());
   const isPeriodToday = periodDays.has(todayStr);
-  const isInCycle = prediction?.current_phase?.in_cycle ?? false;
-  const phase = prediction?.current_phase?.phase;
-  const cycleDay = prediction?.current_phase?.cycle_day;
+
+  // Source de vérité locale : les jours marqués priment sur `prediction` pour
+  // savoir si on est en période. → mise à jour IMMÉDIATE du libellé « Règles »
+  // sans attendre le round-trip API.
+  const localPhase = useMemo(
+    () => computeLocalCurrentPhase(periodDays, todayStr),
+    [periodDays, todayStr]
+  );
+
+  const isInCycle = localPhase?.in_cycle ?? prediction?.current_phase?.in_cycle ?? false;
+  const phase = localPhase?.phase ?? prediction?.current_phase?.phase;
+  const cycleDay = localPhase?.cycle_day ?? prediction?.current_phase?.cycle_day;
   const nextEvent = prediction?.next_event;
   const reliability = prediction?.stats.reliability;
 
-  if (isLoading || !prediction) {
+  if (isLoading || (!prediction && !localPhase)) {
     return (
       <div style={{
         margin: `${spacing.md}px ${spacing.lg}px`,
@@ -598,7 +641,7 @@ function TodayCard({
           /* Bouton marquer règles — pour elle */
           <motion.button
             whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.9 }}
+            whileTap={{ scale: 0.94 }}
             onClick={onMarkToday}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
@@ -607,7 +650,7 @@ function TodayCard({
               border: `1.5px solid ${isPeriodToday ? PHASE_COLORS.period : colors.border}`,
               backgroundColor: isPeriodToday ? `${PHASE_COLORS.period}15` : 'transparent',
               cursor: 'pointer', fontFamily: 'inherit',
-              transition: 'all 0.2s',
+              transition: 'transform 160ms cubic-bezier(0.23, 1, 0.32, 1), border-color 0.2s ease, background-color 0.2s ease',
             }}
           >
             {isPeriodToday ? (
@@ -771,7 +814,7 @@ function DayCell({
   // Mode interactif — la femme peut marquer ses règles
   return (
     <motion.button
-      whileTap={{ scale: 0.85 }}
+      whileTap={{ scale: 0.95 }}
       onClick={() => {
         setTapping(true);
         setTimeout(() => setTapping(false), 150);
@@ -786,7 +829,7 @@ function DayCell({
         backgroundColor: bgColor,
         border: `1.5px solid ${borderColor}`,
         cursor: 'pointer', fontFamily: 'inherit',
-        transition: 'background-color 0.15s',
+        transition: 'background-color 0.15s, transform 160ms cubic-bezier(0.23, 1, 0.32, 1)',
         opacity: day.isCurrentMonth ? 1 : 0.3,
         position: 'relative',
         width: '100%',

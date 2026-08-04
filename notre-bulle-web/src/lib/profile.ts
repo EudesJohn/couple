@@ -17,7 +17,10 @@
 import { config } from '../constants/config';
 import type { UserIdentity } from './auth';
 
-const IDENTITY_KEY = 'notre-bulle.identity';
+// Même clé que src/lib/auth.ts (STORE_KEYS.IDENTITY, v2).
+// L'ancienne clé « notre-bulle.identity » est ignorée volontairement :
+// chaque appareil déjà utilisé repasse par la saisie de l'UUID.
+const IDENTITY_KEY = 'notre-bulle.identity.v2';
 
 export function getCurrentIdentity(): UserIdentity | null {
   return getStoredIdentity();

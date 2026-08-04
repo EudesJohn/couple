@@ -92,11 +92,26 @@ CREATE TABLE presence (
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Abonnements Web Push (pour les notifications quand l'app est fermée)
+-- Accédée par l'API Python via la clé anon → nécessite une politique RLS
+-- (voir plus bas). Sans elle, la table reste vide → aucun push envoyé.
+CREATE TABLE push_subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL,
+  p256dh_key TEXT NOT NULL,
+  auth_key TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(profile_id, endpoint)
+);
+
 -- 3. INDEX
 CREATE INDEX idx_messages_conversation ON messages(conversation_id, created_at DESC);
 CREATE INDEX idx_attachments_message ON attachments(message_id);
 CREATE INDEX idx_calls_caller ON calls(caller_id);
 CREATE INDEX idx_messages_reply_to ON messages(reply_to);
+CREATE INDEX idx_push_subscriptions_profile_id ON push_subscriptions(profile_id);
 
 -- 4. RLS (Row Level Security) — les deux profils ont accès total
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
@@ -107,6 +122,7 @@ ALTER TABLE attachments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE message_status ENABLE ROW LEVEL SECURITY;
 ALTER TABLE calls ENABLE ROW LEVEL SECURITY;
 ALTER TABLE presence ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
 
 -- Politique : les deux membres du couple ont tous les accès
 CREATE POLICY full_access ON profiles
@@ -133,6 +149,9 @@ CREATE POLICY full_access ON calls
 CREATE POLICY full_access ON presence
   FOR ALL USING (true);
 
+CREATE POLICY full_access ON push_subscriptions
+  FOR ALL USING (true);
+
 -- 5. TRIGGER updated_at
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$
@@ -144,6 +163,10 @@ $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER set_updated_at
   BEFORE UPDATE ON profiles
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+CREATE TRIGGER set_updated_at
+  BEFORE UPDATE ON push_subscriptions
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 -- 6. Buckets de stockage + politiques RLS publiques

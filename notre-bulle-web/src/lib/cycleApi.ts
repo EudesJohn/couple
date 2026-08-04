@@ -165,7 +165,8 @@ export async function getCycleEntriesByProfileIds(
 
 export async function fetchPredictions(
   entries: CycleEntry[],
-  periodLength: number = 5
+  periodLength: number = 5,
+  today?: string
 ): Promise<PredictionResult | null> {
   try {
     const response = await fetch(`${PYTHON_API_URL}/api/predict`, {
@@ -180,6 +181,9 @@ export async function fetchPredictions(
         })),
         period_length: periodLength,
         num_predictions: 3,
+        // Date locale du client : évite le décalage de fuseau entre le client
+        // et le serveur (Vercel tourne en UTC).
+        today,
       }),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -188,6 +192,306 @@ export async function fetchPredictions(
     console.warn('API Python indisponible:', err.message);
     return null;
   }
+}
+
+// --- Prédiction locale de secours (fallback hors-ligne) ---
+// Portage TypeScript de la logique Python (api/index.py). Sert de SOURCE DE
+// VÉRITÉ immédiate : dès qu'un jour est marqué, la carte « Aujourd'hui » et le
+// calendrier sont corrects sans attendre le round-trip réseau (et même si
+// l'API est injoignable).
+
+const LOCAL_CYCLE_LENGTH = 28;
+const LOCAL_PERIOD_LENGTH = 5;
+const LUTEAL_DAYS = 14;
+const MIN_PERIOD_GAP = 5;
+const MIN_CYCLE_LENGTH = 20;
+const MAX_CYCLE_LENGTH = 45;
+
+function parseLocalDate(dateStr: string): Date {
+  // Parse "YYYY-MM-DD" en minuit LOCAL (évite le décalage de fuseau de new Date("...")).
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function addDaysLocal(dateStr: string, days: number): string {
+  const dt = parseLocalDate(dateStr);
+  dt.setDate(dt.getDate() + days);
+  return formatDateStr(dt);
+}
+
+function diffDaysLocal(a: string, b: string): number {
+  const aMs = parseLocalDate(a).getTime();
+  const bMs = parseLocalDate(b).getTime();
+  return Math.round((bMs - aMs) / 86400000);
+}
+
+function medianSortedLocal(arr: number[]): number {
+  const n = arr.length;
+  if (n % 2 === 1) return arr[(n - 1) / 2];
+  return (arr[n / 2 - 1] + arr[n / 2]) / 2;
+}
+
+function averageCycleLocal(lengths: number[]): number {
+  if (lengths.length === 0) return LOCAL_CYCLE_LENGTH;
+  if (lengths.length === 1) return lengths[0];
+  if (lengths.length === 2) return (lengths[0] + lengths[1]) / 2;
+  return medianSortedLocal([...lengths].sort((a, b) => a - b));
+}
+
+function reliabilityLocal(lengths: number[]): CycleStats['reliability'] {
+  let score = 0;
+  const n = lengths.length;
+  if (n >= 6) score += 40;
+  else if (n >= 4) score += 30;
+  else if (n >= 2) score += 15;
+  else if (n >= 1) score += 5;
+  if (n >= 2) {
+    const mean = lengths.reduce((a, b) => a + b, 0) / n;
+    const variance = lengths.reduce((acc, l) => acc + (l - mean) ** 2, 0) / (n - 1);
+    const sd = Math.sqrt(variance);
+    if (sd <= 2) score += 40;
+    else if (sd <= 4) score += 30;
+    else if (sd <= 7) score += 15;
+    else score += 5;
+  }
+  let level: string;
+  let message: string;
+  if (score >= 70) {
+    level = 'fiable';
+    message = `Prédictions fiables basées sur ${n} cycles analysés.`;
+  } else if (score >= 40) {
+    level = 'moyen';
+    message = `Prédictions moyennes — ajoutez encore ${Math.max(0, 4 - n)} cycles pour affiner.`;
+  } else if (n === 0) {
+    level = 'faible';
+    message = 'Marquez vos règles pour commencer les prédictions.';
+  } else if (n === 1) {
+    level = 'faible';
+    message = 'Un seul cycle enregistré. La prédiction s\'améliorera avec plus de données.';
+  } else {
+    level = 'faible';
+    message = 'Données insuffisantes pour des prédictions fiables.';
+  }
+  return { score: Math.min(score, 100), level, cycles_analyzed: n, message };
+}
+
+/**
+ * Calcule une prédiction complète localement, sans appel réseau.
+ * Reflète la logique de api/index.py : groupes de jours de règles, durée
+ * moyenne de cycle, cycles passés/futurs, phase actuelle, prochain événement
+ * et fiabilité. Renvoie null si aucun jour de règles n'est marqué.
+ */
+export function computeLocalPrediction(entries: CycleEntry[]): PredictionResult | null {
+  const periodDates = entries
+    .filter((e) => e.event_type === 'period')
+    .map((e) => e.event_date)
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort();
+  if (periodDates.length === 0) return null;
+
+  // Grouper les jours consécutifs (écart ≤ 5 j) en périodes distinctes.
+  const groups: string[][] = [];
+  for (const d of periodDates) {
+    const lastGroup = groups[groups.length - 1];
+    if (lastGroup && diffDaysLocal(lastGroup[lastGroup.length - 1], d) <= MIN_PERIOD_GAP) {
+      lastGroup.push(d);
+    } else {
+      groups.push([d]);
+    }
+  }
+
+  const starts = groups.map((g) => g[0]);
+  const lengths: number[] = [];
+  for (let i = 0; i < starts.length - 1; i++) {
+    const len = diffDaysLocal(starts[i], starts[i + 1]);
+    if (len >= MIN_CYCLE_LENGTH && len <= MAX_CYCLE_LENGTH) lengths.push(len);
+  }
+  const avgCycle = averageCycleLocal(lengths);
+  const avgRounded = Math.round(avgCycle);
+
+  const todayStr = formatDateStr(new Date());
+
+  // Cycles passés (début de chaque groupe enregistré)
+  const pastCycles: PastCycle[] = starts.map((s, i) => {
+    const end = i + 1 < starts.length ? starts[i + 1] : addDaysLocal(s, avgRounded);
+    return {
+      cycle_number: i + 1,
+      start_date: s,
+      end_date: end,
+      length_days: i + 1 < starts.length ? diffDaysLocal(s, starts[i + 1]) : null,
+      period_days_recorded: groups[i] || [],
+      predicted: false,
+    };
+  });
+
+  // Cycles futurs prédits
+  const futureCycles: FutureCycle[] = [];
+  let currentStart = starts[starts.length - 1];
+  for (let i = 0; i < 3; i++) {
+    const nextStart = addDaysLocal(currentStart, avgRounded);
+    const ovulation = addDaysLocal(nextStart, -LUTEAL_DAYS);
+    const fertileStart = addDaysLocal(ovulation, -5);
+    const fertileEnd = addDaysLocal(ovulation, 1);
+    const days: PhaseDay[] = [];
+    let cur = currentStart;
+    let guard = 0;
+    while (cur < nextStart && guard < 90) {
+      const dayIdx = diffDaysLocal(currentStart, cur);
+      let phase: PhaseDay['phase'] = 'normal';
+      if (dayIdx >= 0 && dayIdx < LOCAL_PERIOD_LENGTH) phase = 'period';
+      else if (cur === ovulation) phase = 'ovulation';
+      else if (cur >= fertileStart && cur <= fertileEnd) phase = 'fertile';
+      days.push({ date: cur, phase });
+      cur = addDaysLocal(cur, 1);
+      guard++;
+    }
+    futureCycles.push({
+      cycle_number: `Prédit ${i + 1}`,
+      start_date: currentStart,
+      end_date: nextStart,
+      length_days: avgRounded,
+      ovulation_date: ovulation,
+      fertile_window: { start: fertileStart, end: fertileEnd },
+      days,
+      predicted: true,
+    });
+    currentStart = nextStart;
+  }
+
+  // Phase actuelle — miroir de _get_current_phase (api/index.py)
+  let currentPhase: CurrentPhase = { in_cycle: false, phase: 'unknown' };
+  let cycleStart = '';
+  for (const s of starts) {
+    if (s <= todayStr) cycleStart = s;
+  }
+  if (cycleStart) {
+    const cycleDay = diffDaysLocal(cycleStart, todayStr) + 1;
+    const cycleEnd = addDaysLocal(cycleStart, avgRounded);
+    if (todayStr < cycleEnd && cycleDay >= 1) {
+      let phase: string;
+      if (diffDaysLocal(cycleStart, todayStr) <= LOCAL_PERIOD_LENGTH) {
+        phase = 'period';
+      } else {
+        const ovulation = addDaysLocal(cycleEnd, -LUTEAL_DAYS);
+        const fertileStart = addDaysLocal(ovulation, -5);
+        const fertileEnd = addDaysLocal(ovulation, 1);
+        if (todayStr === ovulation) phase = 'ovulation';
+        else if (todayStr >= fertileStart && todayStr <= fertileEnd) phase = 'fertile';
+        else phase = 'normal';
+      }
+      currentPhase = {
+        in_cycle: true,
+        cycle_day: cycleDay,
+        cycle_length: avgRounded,
+        phase,
+      };
+    }
+  }
+
+  // Prochain événement — ignore la période en cours (miroir de _get_next_event)
+  let nextEvent: NextEvent | null = null;
+  let prevWasPeriod = false;
+  for (const cycle of futureCycles) {
+    for (const day of cycle.days) {
+      if (day.date <= todayStr) {
+        prevWasPeriod = day.phase === 'period';
+        continue;
+      }
+      if (day.phase === 'period' && prevWasPeriod) {
+        prevWasPeriod = true;
+        continue;
+      }
+      if (day.phase === 'period' || day.phase === 'ovulation' || day.phase === 'fertile') {
+        nextEvent = {
+          date: day.date,
+          phase: day.phase,
+          days_remaining: diffDaysLocal(todayStr, day.date),
+        };
+        break;
+      }
+      prevWasPeriod = false;
+    }
+    if (nextEvent) break;
+  }
+  // Repli : prochain début de cycle prédit
+  if (!nextEvent) {
+    for (const cycle of futureCycles) {
+      if (cycle.start_date > todayStr) {
+        nextEvent = {
+          date: cycle.start_date,
+          phase: 'period',
+          days_remaining: diffDaysLocal(todayStr, cycle.start_date),
+        };
+        break;
+      }
+    }
+  }
+
+  const stdDev =
+    lengths.length >= 2
+      ? (() => {
+          const mean = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+          const variance = lengths.reduce((acc, l) => acc + (l - mean) ** 2, 0) / (lengths.length - 1);
+          return Math.sqrt(variance);
+        })()
+      : null;
+  const regularity =
+    stdDev === null
+      ? 'insuffisant'
+      : stdDev <= 2
+        ? 'très régulier'
+        : stdDev <= 4
+          ? 'régulier'
+          : stdDev <= 7
+            ? 'modérément régulier'
+            : 'irrégulier';
+
+  const stats: CycleStats = {
+    cycle_count: lengths.length,
+    average_cycle_days: Math.round(avgCycle * 10) / 10,
+    std_dev_days: stdDev !== null ? Math.round(stdDev * 10) / 10 : null,
+    min_cycle: lengths.length ? Math.min(...lengths) : null,
+    max_cycle: lengths.length ? Math.max(...lengths) : null,
+    last_period_start: starts[starts.length - 1] || null,
+    cycle_regularity: regularity,
+    reliability: reliabilityLocal(lengths),
+    period_length_days: LOCAL_PERIOD_LENGTH,
+  };
+
+  return {
+    past_cycles: pastCycles,
+    future_cycles: futureCycles,
+    current_phase: currentPhase,
+    next_event: nextEvent,
+    stats,
+    today: todayStr,
+  };
+}
+
+/**
+ * Calcule la phase actuelle locale depuis les jours de règles marqués.
+ * Utilisée par la TodayCard comme SOURCE DE VÉRITÉ pour savoir si on est en
+ * période (« Règles » si aujourd'hui est marqué, cycle_day = jours écoulés
+ * depuis le premier jour marqué de la période en cours).
+ */
+export function computeLocalCurrentPhase(
+  periodDays: Set<string>,
+  todayStr: string
+): CurrentPhase | null {
+  if (!periodDays.has(todayStr)) return null;
+  const marked = [...periodDays].filter((d) => d <= todayStr).sort();
+  // Remonter au début du groupe de règles en cours (écarts ≤ 5 j).
+  let start = todayStr;
+  let idx = marked.indexOf(todayStr);
+  while (idx > 0 && diffDaysLocal(marked[idx - 1], marked[idx]) <= MIN_PERIOD_GAP) {
+    idx -= 1;
+    start = marked[idx];
+  }
+  return {
+    in_cycle: true,
+    cycle_day: diffDaysLocal(start, todayStr) + 1,
+    phase: 'period',
+  };
 }
 
 // --- Utilitaires pour le calendrier ---

@@ -230,8 +230,24 @@ async function requestWebNotificationPermission(): Promise<boolean> {
   return permission === 'granted';
 }
 
-async function sendWebNotification(title: string, body: string, data?: Record<string, any>) {
+async function sendWebNotification(title: string, body: string, data?: Record<string, any>, tag?: string) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+  // ⚠️ TAG DISTINCT — évite qu'une notification d'appel soit remplacée par
+  // une notification de message (et inversement). Les deux partageaient le
+  // même tag 'notre-bulle' → la 2e notification écrasait la 1re sans sonner.
+  //   - appel entrant  → call-<callId>
+  //   - nouveau message → msg-<conversationId>
+  //   - appel manqué   → call-missed
+  const notifTag = tag
+    || (data?.screen === 'call'
+      ? (data?.callId ? `call-${String(data.callId)}` : 'call-incoming')
+      : data?.conversationId ? `msg-${String(data.conversationId)}` : 'notre-bulle');
+
+  // Vibration différenciée : appel entrant = alarme longue qui se répète,
+  // message = petit bip court. (Complète le son synthétisé côté app ouverte.)
+  const isCall = data?.screen === 'call';
+  const vibrate = isCall ? [400, 200, 400, 200, 900] : [200, 100, 200];
 
   // 1. Essayer le Service Worker (nécessaire pour iOS PWA standalone
   //    où new Notification() est silencieusement bloqué)
@@ -242,9 +258,11 @@ async function sendWebNotification(title: string, body: string, data?: Record<st
         body,
         icon: '/icon-192.png',
         badge: '/icon-192.png',
-        tag: 'notre-bulle',
+        tag: notifTag,
         data,
-        vibrate: [200, 100, 200],
+        vibrate,
+        // Pas de renotify : tags uniques par appel → jamais de remplacement
+        // à re-notifier, et sur Chrome Android ça peut inhiber la vibration.
         requireInteraction: true,
       } as NotificationOptions);
       return; // Succès
@@ -259,7 +277,7 @@ async function sendWebNotification(title: string, body: string, data?: Record<st
       body,
       icon: '/icon-192.png',
       badge: '/icon-192.png',
-      tag: 'notre-bulle',
+      tag: notifTag,
       data,
     });
 
@@ -306,7 +324,7 @@ export async function notifyNewMessage(
   conversationId: string
 ): Promise<void> {
   const body = content ?? 'Photo ou media reçu';
-  sendWebNotification(senderName, body, { screen: 'chat', conversationId });
+  sendWebNotification(senderName, body, { screen: 'chat', conversationId }, `msg-${conversationId}`);
   playMessageSound();
 }
 
@@ -315,16 +333,20 @@ export async function notifyMissedCall(
   callType: 'audio' | 'video'
 ): Promise<void> {
   const typeLabel = callType === 'video' ? 'Video' : 'Audio';
-  sendWebNotification('Appel manqué', `${typeLabel} — ${callerName} t'a appelé`, { screen: 'chat', callType });
+  sendWebNotification('Appel manqué', `${typeLabel} — ${callerName} t'a appelé`, { screen: 'chat', callType }, 'call-missed');
   playCallEndSound();
 }
 
 export async function notifyIncomingCall(
   callerName: string,
-  callType: 'audio' | 'video'
+  callType: 'audio' | 'video',
+  callId?: string
 ): Promise<void> {
   const typeLabel = callType === 'video' ? 'Video' : 'Audio';
-  sendWebNotification(`Appel ${typeLabel}`, `${callerName} t'appelle...`, { screen: 'call', callType });
+  // Le callId est transmis dans data (→ navigation SW notificationclick) et
+  // utilisé pour un tag unique call-<callId> : chaque appel remplace proprement
+  // la notification du précédent tout en restant distinct des messages.
+  sendWebNotification(`Appel ${typeLabel}`, `${callerName} t'appelle...`, { screen: 'call', callType, callId }, callId ? `call-${callId}` : 'call-incoming');
   startRingtone();
 }
 

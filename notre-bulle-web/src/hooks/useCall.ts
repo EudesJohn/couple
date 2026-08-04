@@ -11,6 +11,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { getCurrentProfile } from '../lib/supabase';
+import { getMyProfileId, getPartnerProfileId, getActualPartnerProfileId } from '../lib/profile';
 import {
   joinRoom, leaveRoom, startPublish, stopPublish,
   toggleSpeaker, muteMicrophone,
@@ -19,7 +20,7 @@ import {
   createOffer, switchCamera as switchCameraZego,
 } from '../lib/zego';
 import type { Call, CallType } from '../types/database';
-import { notifyIncomingCall, notifyMissedCall } from './useNotifications';
+import { notifyIncomingCall, notifyMissedCall, triggerPushNotification } from './useNotifications';
 import { startRingtone, stopRingtone, playCallEndSound } from '../lib/sounds';
 
 // Compteur pour noms de channel uniques (contourne le bug RealtimeClient.channel()
@@ -85,12 +86,36 @@ function _stopSharedTimer(): void {
   }
 }
 
+// Transition propre vers 'idle' après la fin d'un appel.
+// Garde-fou : un timer périmé ne doit PAS écraser un nouvel appel qui aurait
+// démarré entre-temps (INSERT reçu → callState 'ringing', ou startCall →
+// 'calling'). Sans ce garde-fou, les timeouts de fin d'appel remettaient
+// inconditionnellement l'état à 'idle' et « mélangeaient » les appels.
+function _scheduleIdle(delay: number): void {
+  setTimeout(() => {
+    if (_store.callState === 'ended') {
+      _updateStore({ callState: 'idle' });
+    }
+  }, delay);
+}
+
 // Garde-fou module-level : les deux instances (ChatLayout / CallScreen) reçoivent les
 // mêmes événements Realtime. On garde un traceur pour la connexion WebRTC mais on ne
 // bloque pas : les opérations dans zego.ts sont idempotentes (joinRoom, startPublish,
 // createOffer avec flag offerSent), donc les deux instances peuvent appeler initZegoCall
 // sans risque de double initialisation.
 let _zegoInitializedCallId: string | null = null;
+
+// ID de l'appel actif — partagé entre TOUTES les instances de useCall
+// (ChatLayout, CallScreen, CallOverlay). Variable module-level volontairement :
+// un useRef est perdu au démontage de CallScreen (minimisation / retour depuis
+// le PiP sans paramètres d'URL), ce qui empêchait de :
+//   - raccrocher (endCall) depuis l'overlay ou depuis l'écran plein écran
+//     revenu du PiP (callId introuvable → no-op silencieux),
+//   - détecter le raccrochage du partenaire (le handler Realtime UPDATE
+//     compare cet ID ; s'il est null, la coupure d'un côté n'arrive jamais
+//     à l'autre, qui reste bloqué « connected » → appels mélangés).
+let _activeCallId: string | null = null;
 
 // Flag : l'appel a déjà été connecté (pour wasAnswered dans endCall,
 // même si WebRTC s'est déconnecté entre-temps)
@@ -248,7 +273,6 @@ export function useCall(): UseCallReturn {
 
   const profileRef = useRef<{ id: string; name: string } | null>(null);
   const partnerRef = useRef<{ id: string; name: string } | null>(null);
-  const currentCallIdRef = useRef<string | null>(null);
   const remoteStreamIdRef = useRef<string | null>(null);
   const callStateRef = useRef<CallStateType>(callState);
   callStateRef.current = callState;
@@ -321,14 +345,14 @@ export function useCall(): UseCallReturn {
       if (state === 'failed') {
         if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
         _updateStore({ callState: 'ended' });
-        setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
+        _scheduleIdle(2000);
       } else if (state === 'disconnected') {
         if (_disconnectTimer) return; // déjà un timer en cours
         _disconnectTimer = setTimeout(() => {
           _disconnectTimer = null;
           // Après 5s sans reconnexion, on termine l'appel
           _updateStore({ callState: 'ended' });
-          setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
+          _scheduleIdle(2000);
         }, 5000);
       } else if (state === 'connected') {
         // Reconnexion réussie → annuler le timer de grâce
@@ -372,7 +396,7 @@ export function useCall(): UseCallReturn {
         console.error('Erreur WebRTC:', err);
         _zegoInitializedCallId = null; // permet une tentative ultérieure
         _updateStore({ callState: 'ended' });
-        setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
+        _scheduleIdle(2000);
       }
     } else {
       // Déjà initialisé par une autre instance (p. ex. ChatLayout a pris le
@@ -398,10 +422,10 @@ export function useCall(): UseCallReturn {
   //       toutes les autres (ChatLayout / CallScreen) reçoivent l'événement ───
   useEffect(() => {
     const onConnected = () => {
-      // On utilise currentCallIdRef plutôt que callStateRef pour éviter le
-      // problème de stale ref (au moment où emitCallConnected est appelé,
-      // le re-render avec 'connecting' n'a pas encore eu lieu).
-      if (currentCallIdRef.current && callStateRef.current !== 'connected' && callStateRef.current !== 'ended') {
+      // On utilise _activeCallId (module-level) plutôt que callStateRef pour
+      // éviter le problème de stale ref (au moment où emitCallConnected est
+      // appelé, le re-render avec 'connecting' n'a pas encore eu lieu).
+      if (_activeCallId && callStateRef.current !== 'connected' && callStateRef.current !== 'ended') {
         _updateStore({ callState: 'connected' });
         _startSharedTimer();
       }
@@ -419,7 +443,7 @@ export function useCall(): UseCallReturn {
     const type = params.get('type');
     if (!callId || !role || !type) return;
 
-    currentCallIdRef.current = callId;
+    _activeCallId = callId;
     _updateStore({ callType: type as CallType });
 
     if (role === 'caller') {
@@ -429,6 +453,17 @@ export function useCall(): UseCallReturn {
       // Le répondant initie WebRTC immédiatement en tant qu'offerer
       _updateStore({ callState: 'connecting' });
       initZegoCall(callId, type as CallType, true);
+
+      // Marquer l'appel comme 'answered' pour que l'appelant (Realtime UPDATE)
+      // initie WebRTC de son côté et que les deux se connectent. Ce chemin
+      // couvre le cas où l'appelé ouvre l'app via la notification push
+      // (app PWA fermée au moment de l'appel entrant) — sinon l'appelant
+      // resterait bloqué en 'calling' sans jamais voir l'UPDATE.
+      supabase
+        .from('calls')
+        .update({ status: 'answered', answered_at: new Date().toISOString() })
+        .eq('id', callId)
+        .then(() => {});
     }
 
     return () => {
@@ -457,9 +492,16 @@ export function useCall(): UseCallReturn {
           const me = await getCurrentProfile();
           if (!me || call.caller_id === me.id) return;
 
+          // Ne pas superposer un nouvel appel entrant si on est déjà dans un
+          // appel établi ou en train d'appeler (sinon les appels se mélangent
+          // quand un appel précédent n'a pas été correctement coupé).
+          if (_store.callState === 'connected' || _store.callState === 'calling') return;
+
           _updateStore({ incomingCall: call, callType: call.type, callState: 'ringing' });
-          currentCallIdRef.current = call.id; // pour que l'UPDATE puisse nettoyer
-          notifyIncomingCall(partnerRef.current?.name || 'Partenaire', call.type);
+          _activeCallId = call.id; // pour que l'UPDATE puisse nettoyer
+          // 3e argument = call.id → tag de notification unique call-<callId>
+          // (data.callId est aussi utilisé par le SW pour naviguer vers /call)
+          notifyIncomingCall(partnerRef.current?.name || 'Partenaire', call.type, call.id);
         }
       )
       .on(
@@ -471,13 +513,13 @@ export function useCall(): UseCallReturn {
           if (!me) return;
 
           // L'appelant détecte que le partenaire a répondu (answerer = pas d'offre SDP)
-          if (updated.status === 'answered' && !updated.ended_at && updated.caller_id === me.id && currentCallIdRef.current === updated.id) {
+          if (updated.status === 'answered' && !updated.ended_at && updated.caller_id === me.id && _activeCallId === updated.id) {
             _updateStore({ callState: 'connecting' });
             await initZegoCall(updated.id, updated.type, false);
           }
 
           // Le partenaire a raccroché (status='answered' avec ended_at)
-          if (updated.status === 'answered' && updated.ended_at && currentCallIdRef.current === updated.id) {
+          if (updated.status === 'answered' && updated.ended_at && _activeCallId === updated.id) {
             if (callStateRef.current !== 'ended') {
               setOnRemoteStreamUpdate(null);
               setOnConnectionStateChange(null);
@@ -486,17 +528,17 @@ export function useCall(): UseCallReturn {
               _stopSharedTimer();
               if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
               _wasEverConnected = false;
-              currentCallIdRef.current = null;
+              _activeCallId = null;
               _zegoInitializedCallId = null;
               _updateStore({ callState: 'ended' });
-              setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
+              _scheduleIdle(2000);
             }
           }
 
           // Le partenaire a annulé / l'appel a échoué
           if (
             (updated.status === 'cancelled' || updated.status === 'failed') &&
-            currentCallIdRef.current === updated.id
+            _activeCallId === updated.id
           ) {
             stopRingtone();
             // Notification si l'appel n'avait pas encore abouti (appel manqué)
@@ -511,10 +553,10 @@ export function useCall(): UseCallReturn {
             _stopSharedTimer();
             if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
             _wasEverConnected = false;
-            currentCallIdRef.current = null;
+            _activeCallId = null;
             _zegoInitializedCallId = null;
             _updateStore({ callState: 'ended' });
-            setTimeout(() => _updateStore({ callState: 'idle' }), 2000);
+            _scheduleIdle(2000);
           }
         }
       )
@@ -546,7 +588,30 @@ export function useCall(): UseCallReturn {
       return;
     }
 
-    currentCallIdRef.current = call.id;
+    _activeCallId = call.id;
+
+    // ─── Secours push côté client (comme les messages) ───
+    // Le trigger DB /on-new-call (20250731_call_push_trigger.sql) peut ne pas
+    // être appliqué à Supabase. Pour garantir que le partenaire reçoit la
+    // notification d'appel entrant même PWA fermée, on envoie un push direct
+    // depuis l'appelant (qui, lui, est forcément ouvert). Le tag call-<callId>
+    // permet au SW de naviguer vers /call au clic.
+    const partnerProfileId = getActualPartnerProfileId();
+    if (partnerProfileId) {
+      const callerName = me.name || 'Partenaire';
+      const typeLabel = type === 'video' ? 'Video' : 'Audio';
+      triggerPushNotification(
+        partnerProfileId,
+        `Appel ${typeLabel}`,
+        `${callerName} t'appelle...`,
+        {
+          screen: 'call',
+          callType: type,
+          callId: call.id,
+        }
+      ).catch(() => {});
+    }
+
     navigate(`/call?callId=${call.id}&type=${type}&role=caller`);
   }, [navigate]);
 
@@ -555,7 +620,7 @@ export function useCall(): UseCallReturn {
     if (!incomingCall) return;
     stopRingtone();
     const callId = incomingCall.id;
-    currentCallIdRef.current = callId;
+    _activeCallId = callId;
     _updateStore({ incomingCall: null });
 
     await supabase
@@ -577,8 +642,7 @@ export function useCall(): UseCallReturn {
 
   // ─── RACCROCHER ───
   const endCall = useCallback(async () => {
-    const callId = currentCallIdRef.current;
-    if (!callId) return;
+    const callId = _activeCallId;
     stopRingtone();
     playCallEndSound();
 
@@ -590,6 +654,9 @@ export function useCall(): UseCallReturn {
 
     _updateStore({ callState: 'ended' });
 
+    // Nettoyage WebRTC — toujours exécuté, même si le callId est introuvable
+    // (état dégradé : minimisation, retour depuis le PiP). Sans cela le
+    // raccrochage était un no-op silencieux et l'appel restait « collé ».
     const remoteId = remoteStreamIdRef.current;
     if (remoteId) {
       await stopPlayingStream(remoteId).catch(() => {});
@@ -599,20 +666,21 @@ export function useCall(): UseCallReturn {
     setOnRemoteStreamUpdate(null);
     setOnConnectionStateChange(null);
     await stopPublish();
-    await leaveRoom(callId);
+    await leaveRoom(callId ?? undefined);
 
-    await supabase
-      .from('calls')
-      .update({
-        status: wasAnswered ? 'answered' : 'cancelled',
-        ended_at: new Date().toISOString(),
-        duration_s: wasAnswered ? currentDuration : null,
-      })
-      .eq('id', callId);
+    if (callId) {
+      await supabase
+        .from('calls')
+        .update({
+          status: wasAnswered ? 'answered' : 'cancelled',
+          ended_at: new Date().toISOString(),
+          duration_s: wasAnswered ? currentDuration : null,
+        })
+        .eq('id', callId);
 
-    // ─── Journal d'appel : insérer un message type 'call' ───
-    const me = profileRef.current;
-    if (me) {
+      // ─── Journal d'appel : insérer un message type 'call' ───
+      const me = profileRef.current;
+      if (me) {
       const { data: callRecord } = await supabase
         .from('calls')
         .select('caller_id, type')
@@ -627,10 +695,17 @@ export function useCall(): UseCallReturn {
           .single();
 
         if (conv) {
-          // sender_id = caller_id pour que isOwn fonctionne des deux côtés
+          // sender_id : mapping INVERSÉ des messages (getMyProfileId /
+          // getPartnerProfileId) pour que isOwn s'affiche correctement des
+          // deux côtés — sortant chez l'appelant, entrant chez l'appelé.
+          // Le caller_id en base utilise le mapping CORRECT (getOwnProfileId),
+          // d'où l'inversion ici pour rester cohérent avec le reste du chat.
+          const isMeCaller = callRecord.caller_id === me.id;
+          const senderId = isMeCaller ? getMyProfileId() : getPartnerProfileId();
+
           await supabase.from('messages').insert({
             conversation_id: conv.id,
-            sender_id: callRecord.caller_id,
+            sender_id: senderId,
             type: 'call',
             content: JSON.stringify({
               callType: callRecord.type,
@@ -641,18 +716,22 @@ export function useCall(): UseCallReturn {
         }
       }
     }
+    } // fin if (callId)
 
     _stopSharedTimer();
     if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
     _wasEverConnected = false;
-    currentCallIdRef.current = null;
+    _activeCallId = null;
     _zegoInitializedCallId = null;
 
-    setTimeout(() => {
-      _updateStore({ callState: 'idle' });
-      navigate(-1);
-    }, 1000);
-  }, [navigate]);
+    // La navigation de sortie (/call → /chat) est gérée par CallScreen quand
+    // callState passe à 'idle' — pas ici. Avant, navigate(-1) ici créait une
+    // double navigation et ne couvrait pas le cas où le PARTENAIRE raccroche
+    // (dans ce cas endCall n'est jamais appelé de notre côté et on restait
+    // bloqué sur /call). Le guard de _scheduleIdle évite aussi d'écraser un
+    // éventuel nouvel appel lancé pendant cette fenêtre d'une seconde.
+    _scheduleIdle(1000);
+  }, []);
 
   // ─── Toggle Muet ───
   const toggleMute = useCallback(async () => {
@@ -683,7 +762,7 @@ export function useCall(): UseCallReturn {
       incomingCall: null,
       callDuration: 0,
     });
-    currentCallIdRef.current = null;
+    _activeCallId = null;
     _zegoInitializedCallId = null;
     _wasEverConnected = false;
     if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }

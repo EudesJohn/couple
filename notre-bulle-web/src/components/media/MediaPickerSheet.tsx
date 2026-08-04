@@ -144,7 +144,7 @@ export function MediaPickerSheet({
               <MediaOption
                 icon={ImageIcon}
                 label="Galerie"
-                description="Choisir une photo existante"
+                description="Choisir une ou plusieurs photos"
                 color={colors.accent}
                 onPress={() => { onClose(); onPickImage(); }}
                 delay={0.16}

@@ -2,10 +2,14 @@
 // Bulle vidéo — téléchargement via downloadMedia() + lecteur
 // Design premium avec overlay Play / progression / plein écran
 // Aperçu (poster) : première image extraite via Canvas
+//
+// Verrouillage WhatsApp : si requireDownload est vrai, la vidéo
+// reste derrière un bouton "Télécharger" jusqu'au tap.
 // ============================================================
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { downloadMedia } from '../../lib/media';
-import { colors, spacing, borderRadius } from '../../constants/theme';
+import { useState, useRef, useCallback } from 'react';
+import { useDownloadGate } from '../../hooks/useDownloadGate';
+import { DownloadPlaceholder } from './DownloadPlaceholder';
+import { colors } from '../../constants/theme';
 import { PlayIcon, PauseIcon, VolumeIcon } from '../Icons';
 
 interface VideoBubbleProps {
@@ -15,47 +19,36 @@ interface VideoBubbleProps {
   className?: string;
   /** Appelé quand l'utilisateur veut voir la vidéo en plein écran */
   onExpand?: (blobUrl: string, mimeType: string) => void;
+  /** Bloque la lecture derrière un bouton Télécharger (style WhatsApp) */
+  requireDownload?: boolean;
 }
 
-export function VideoBubble({ storagePath, mimeType, style, className, onExpand }: VideoBubbleProps) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [error, setError] = useState(false);
+export function VideoBubble({ storagePath, mimeType, style, className, onExpand, requireDownload }: VideoBubbleProps) {
+  const { blobUrl, downloading, error, startDownload } = useDownloadGate(storagePath, !!requireDownload);
+
   const [playing, setPlaying] = useState(false);
   const [playbackLoading, setPlaybackLoading] = useState(false);
   const [posterUrl, setPosterUrl] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const blobUrlRef = useRef<string | null>(null);
   const posterUrlRef = useRef<string | null>(null);
   const posterCaptured = useRef(false);
 
-  // Télécharger la vidéo via l'API Supabase
-  useEffect(() => {
-    let cancelled = false;
-    downloadMedia(storagePath)
-      .then((blob) => {
-        if (cancelled) return;
-        const url = URL.createObjectURL(blob);
-        blobUrlRef.current = url;
-        setBlobUrl(url);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error('Erreur chargement vidéo:', err);
-        setError(true);
-      });
+  const w = typeof style?.width === 'number' ? style.width : 240;
+  const h = typeof style?.height === 'number' ? style.height : 200;
 
-    return () => {
-      cancelled = true;
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current);
-        blobUrlRef.current = null;
-      }
-      if (posterUrlRef.current) {
-        URL.revokeObjectURL(posterUrlRef.current);
-        posterUrlRef.current = null;
-      }
-    };
-  }, [storagePath]);
+  // Verrouillé : bouton de téléchargement (style WhatsApp)
+  if (requireDownload && !blobUrl) {
+    return (
+      <DownloadPlaceholder
+        label="Télécharger la vidéo"
+        downloading={downloading}
+        error={error}
+        width={w}
+        height={h}
+        onDownload={startDownload}
+      />
+    );
+  }
 
   // Capturer la première image comme poster (aperçu)
   const handleLoadedMetadata = useCallback(() => {
@@ -114,7 +107,7 @@ export function VideoBubble({ storagePath, mimeType, style, className, onExpand 
   if (error) {
     return (
       <div style={{
-        width: 240, height: 200,
+        width: w, height: h,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         backgroundColor: colors.surfaceAlt,
         color: colors.textTertiary,
@@ -130,7 +123,7 @@ export function VideoBubble({ storagePath, mimeType, style, className, onExpand 
   if (!blobUrl) {
     return (
       <div style={{
-        width: 240, height: 200,
+        width: w, height: h,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         backgroundColor: colors.surfaceAlt,
         ...style,
@@ -150,8 +143,8 @@ export function VideoBubble({ storagePath, mimeType, style, className, onExpand 
     <div
       style={{
         position: 'relative',
-        width: 240,
-        height: 200,
+        width: w,
+        height: h,
         overflow: 'hidden',
         cursor: 'pointer',
         ...style,

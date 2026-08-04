@@ -11,6 +11,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getWebRTCStreams, setOnRemoteStreamReady, requestPictureInPicture, exitPictureInPicture, isPiPSupported } from '../lib/zego';
 import { colors, borderRadius } from '../constants/theme';
 import { useCall } from '../hooks/useCall';
+import { useAuth } from '../hooks/useAuth';
 import {
   HeartFilledIcon, UserIcon, MicIcon, MicOffIcon,
   VolumeIcon, PhoneOffIcon, FlipCameraIcon,
@@ -31,7 +32,7 @@ function ControlBtn({
 }) {
   return (
     <motion.button
-      whileTap={{ scale: 0.85 }}
+      whileTap={{ scale: 0.94 }}
       onClick={onPress}
       aria-label={label}
       style={{
@@ -63,7 +64,7 @@ function ControlBtn({
 function EndCallBtn({ onPress }: { onPress: () => void }) {
   return (
     <motion.button
-      whileTap={{ scale: 0.88 }}
+      whileTap={{ scale: 0.93 }}
       onClick={onPress}
       aria-label="Raccrocher"
       style={{
@@ -169,7 +170,7 @@ function PiPVideo({
           : '0 8px 16px rgba(0,0,0,0.4)',
         cursor: onClick ? 'pointer' : 'default',
         zIndex: size.width > 100 ? 5 : 10,
-        transition: 'all 0.3s ease',
+        transition: 'transform 0.3s cubic-bezier(0.23, 1, 0.32, 1), opacity 0.3s ease',
       }}
     >
       <video
@@ -218,6 +219,10 @@ export default function CallScreen() {
   const role = searchParams.get('role') || 'caller';
   const routeType = searchParams.get('type') || 'audio';
   const navigate = useNavigate();
+  const { identity } = useAuth();
+  // Nom du partenaire affiché pendant l'appel (celui qu'on appelle /
+  // qui nous appelle) — selon l'identité, comme dans ChatLayout.
+  const PARTNER_NAME = identity === 'woman' ? 'Mon chéri' : 'Ma chérie';
 
   // Web: refs pour éléments vidéo
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -286,6 +291,22 @@ export default function CallScreen() {
     remoteVideoRef.current.srcObject = webRTCStreams.remote;
   }, [webRTCStreams.remote]);
 
+  // ─── Sortie d'appel : quitter /call quand l'appel se termine ───
+  // Le store partagé passe à 'idle' dans tous les cas de fin : raccrochage
+  // local (endCall), raccrochage du PARTENAIRE (UPDATE Realtime), échec WebRTC,
+  // refus/annulation. Sans ce retour à /chat, on restait bloqué sur l'écran
+  // d'appel quand c'est l'autre qui coupe.
+  // Le guard prevCallStateRef :
+  //   - ignore le montage initial si l'appel est déjà fini (pas de boucle),
+  //   - évite la double navigation (endCall ne navigue plus lui-même).
+  const prevCallStateRef = useRef(callState);
+  useEffect(() => {
+    if (callState === 'idle' && prevCallStateRef.current !== 'idle') {
+      navigate('/chat', { replace: true });
+    }
+    prevCallStateRef.current = callState;
+  }, [callState, navigate]);
+
   const isVideo = callType === 'video' || routeType === 'video';
   const isConnected = callState === 'connected';
   const isCalling = callState === 'calling' || callState === 'ringing';
@@ -321,8 +342,8 @@ export default function CallScreen() {
       {/* Bouton minimiser */}
       <button
         onClick={() => {
-          // Si appel vidéo connecté, entrer en PiP avant de minimiser
-          if (isVideo && isConnected) {
+          // Entrer en PiP avant de minimiser
+          if (isConnected) {
             requestPictureInPicture();
           }
           navigate(-1);
@@ -429,7 +450,7 @@ export default function CallScreen() {
           >
             <PulsingRing isCalling={isCalling} />
             <h1 style={{ fontSize: 28, fontWeight: 700, color: '#FAFAF9', marginBottom: 8, letterSpacing: -0.5 }}>
-              Ma chérie
+              {PARTNER_NAME}
             </h1>
             <motion.span
               key={callState}

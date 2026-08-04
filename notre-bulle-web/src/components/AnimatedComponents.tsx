@@ -3,7 +3,6 @@
 // Framer Motion remplace react-native-reanimated
 // ============================================================
 import { useState, type ReactNode } from 'react';
-import { motion } from 'framer-motion';
 import { colors, borderRadius, spacing } from '../constants/theme';
 import type { IconProps } from './Icons';
 
@@ -50,10 +49,10 @@ export function AnimatedButton({
   const textColor = isPrimary || isAccent ? '#FAFAF9' : isOutline ? colors.primary : colors.text;
 
   return (
-    <motion.button
+    <button
       onClick={onClick}
       disabled={disabled}
-      whileTap={{ scale: 0.95 }}
+      className="pressable"
       style={{
         display: 'flex',
         flexDirection: 'row',
@@ -79,7 +78,7 @@ export function AnimatedButton({
       {Icon && iconPosition === 'right' && (
         <Icon size={s.iconSize} color={textColor} />
       )}
-    </motion.button>
+    </button>
   );
 }
 
@@ -106,10 +105,10 @@ export function IconButton({
   style,
 }: IconButtonProps) {
   return (
-    <motion.button
+    <button
       onClick={onClick}
       disabled={disabled}
-      whileTap={{ scale: 0.88 }}
+      className="pressable-sm"
       style={{
         width: size,
         height: size,
@@ -126,7 +125,7 @@ export function IconButton({
       }}
     >
       <Icon size={size * 0.45} color={color} />
-    </motion.button>
+    </button>
   );
 }
 
@@ -221,15 +220,13 @@ interface AnimatedCardProps {
 }
 
 export function AnimatedCard({ children, onClick, style }: AnimatedCardProps) {
-  const Component = onClick ? motion.button : motion.div;
-  const extraProps = onClick ? {
-    whileTap: { scale: 0.98 } as const,
-  } : {};
+  const Component = onClick ? 'button' : 'div';
+  const className = onClick ? 'pressable' : undefined;
 
   return (
     <Component
-      {...extraProps}
       onClick={onClick}
+      className={className}
       style={{
         backgroundColor: colors.surface,
         borderRadius: borderRadius.xl,
@@ -267,7 +264,7 @@ export function Divider({ text, style }: DividerProps) {
         ...style,
       }}
     >
-      <div style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
+      <div style={{ flex: 1, height: 1, backgroundColor: colors.borderLight }} />
       {text && (
         <span style={{
           fontSize: 12, fontWeight: 500, color: colors.textTertiary,
@@ -276,7 +273,7 @@ export function Divider({ text, style }: DividerProps) {
           {text}
         </span>
       )}
-      <div style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
+      <div style={{ flex: 1, height: 1, backgroundColor: colors.borderLight }} />
     </div>
   );
 }

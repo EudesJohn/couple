@@ -1,28 +1,27 @@
 -- ============================================================
--- Migration : Trigger push notification sur INSERT messages
--- Alternative au Database Webhook (si pas disponible dans l'UI)
+-- Migration : Trigger push notification d'appel entrant
+-- À chaque INSERT dans la table `calls`, POST vers l'API pour
+-- que le partenaire reçoive une notification + sonnerie même
+-- quand l'app est fermée (Realtime ne fonctionne qu'app ouverte).
 --
 -- ⚠️ CONFIGURATION (obligatoire avant utilisation) :
---   L'URL de l'API et le secret NE sont plus en dur dans le code.
+--   L'URL de l'API et le secret ne sont PLUS en dur dans le code.
 --   Ils se lisent dans les paramètres de la base (custom GUC) :
 --
 --   ALTER DATABASE postgres SET app.api_base_url   = 'https://<mon-domaine>.vercel.app';
 --   ALTER DATABASE postgres SET app.webhook_secret = '<mon-secret>';
 --
---   IMPORTANT : l'ancienne valeur en dur utilisait le MAUVAIS domaine
---   'notre-bulle.vercel.app' (sans '-web'). Le repli ci-dessous est corrigé
---   en 'notre-bulle-web.vercel.app'. Si votre projet a un autre domaine,
---   configurez app.api_base_url.
+--   Valeurs de repli : https://notre-bulle-web.vercel.app et l'ancien
+--   secret ci-dessous (conservés pour rétrocompatibilité).
 --
--- Active pg_net, crée une trigger function qui POST vers l'API
--- et attache le trigger à la table messages.
+-- Usage : exécuter ce fichier dans le Supabase SQL Editor.
 -- ============================================================
 
--- 1. Activer l'extension pg_net (HTTP requests depuis PostgreSQL)
+-- 1. Activer l'extension pg_net (déjà fait si le trigger messages est en place)
 create extension if not exists pg_net;
 
--- 2. Créer la trigger function
-create or replace function public.notify_push_on_new_message()
+-- 2. Créer la trigger function pour les appels
+create or replace function public.notify_push_on_new_call()
 returns trigger
 language plpgsql
 security definer
@@ -31,12 +30,11 @@ declare
   payload text;
   -- URL de l'API résolue dans l'ordre :
   --   1. GUC app.api_base_url   (ex. ALTER DATABASE ... SET app.api_base_url='https://...')
-  --   2. repli = domaine corrigé (l'ancienne valeur 'notre-bulle.vercel.app'
-  --      pointait vers un mauvais domaine → le push n'arrivait jamais)
+  --   2. repli = l'ancienne valeur en dur (rétrocompatibilité)
   webhook_url text := coalesce(
     nullif(current_setting('app.api_base_url', true), ''),
     'https://notre-bulle-web.vercel.app'
-  ) || '/api/push/on-new-message';
+  ) || '/api/push/on-new-call';
   -- Secret résolu dans l'ordre :
   --   1. GUC app.webhook_secret
   --   2. repli = l'ancien secret en dur (rétrocompatibilité)
@@ -45,17 +43,17 @@ declare
     'e9ac521d-6e1d-4668-9d94-14770e6efbf3'
   );
 begin
-  -- Construire le payload au format attendu par l'API (similaire au webhook Supabase)
+  -- Construire le payload au format attendu par l'API
   payload := jsonb_build_object(
     'type', 'INSERT',
-    'table', 'messages',
+    'table', 'calls',
     'schema', 'public',
     'record', row_to_json(new)::jsonb
   )::text;
 
   -- Envoyer la requête HTTP POST via pg_net (asynchrone)
-  -- IMPORTANT: le BEGIN/EXCEPTION garantit que même si pg_net n'est pas
-  -- activée ou si le webhook échoue, le message est quand même inséré.
+  -- Le BEGIN/EXCEPTION garantit que même si pg_net échoue,
+  -- l'insertion de l'appel n'est jamais bloquée.
   begin
     perform net.http_post(
       url := webhook_url,
@@ -66,7 +64,6 @@ begin
       ]
     );
   exception when others then
-    -- Ne JAMAIS bloquer l'insertion du message
     null;
   end;
 
@@ -74,9 +71,9 @@ begin
 end;
 $$;
 
--- 3. Attacher le trigger à la table messages
-drop trigger if exists on_new_message_push on public.messages;
-create trigger on_new_message_push
-  after insert on public.messages
+-- 3. Attacher le trigger à la table calls
+drop trigger if exists on_new_call_push on public.calls;
+create trigger on_new_call_push
+  after insert on public.calls
   for each row
-  execute function public.notify_push_on_new_message();
+  execute function public.notify_push_on_new_call();

@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../constants/config';
 import { cacheProfile, getCachedProfile, clearProfileCache, isProfileCacheStale } from './cache';
-import { getMyProfileId } from './profile';
+import { getOwnProfileId } from './profile';
 
 // ============================================================
 // Client Supabase — création sécurisée
@@ -90,11 +90,20 @@ function createChannelStub() {
 // ==========================================================
 
 export async function getCurrentProfile() {
-  // Cache d'abord — retour immédiat si pas encore périmé
-  const cached = getCachedProfile();
-  if (cached && !isProfileCacheStale()) return cached;
+  // ⚠️ IMPORTANT : le profil courant est le VRAI profil de l'identité active
+  // (femme → VITE_MY_PROFILE_ID, homme → VITE_PARTNER_PROFILE_ID), via
+  // getOwnProfileId(). Ne PAS utiliser getMyProfileId() ici : il renvoie le
+  // mapping historique INVERSÉ utilisé par les messages, ce qui casserait
+  // l'identification de l'appelant (caller_id) et le filtre Realtime
+  // (call.caller_id === me.id) → l'appelé ne recevrait jamais la sonnerie.
+  const ownProfileId = getOwnProfileId();
 
-  // Cache absent ou périmé → fetch Supabase
+  // Cache d'abord — retour immédiat si pas encore périmé ET cohérent
+  // avec l'identité active (un cache d'une autre identité est ignoré).
+  const cached = getCachedProfile();
+  if (cached && cached.id === ownProfileId && !isProfileCacheStale()) return cached;
+
+  // Cache absent, périmé ou profil différent → fetch Supabase
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
@@ -109,16 +118,16 @@ export async function getCurrentProfile() {
   // Fallback : pas de session Auth Supabase → utiliser l'ID de la config
   // (l'app utilise le PIN localStorage, pas Supabase Auth)
   try {
-    const profileId = getMyProfileId();
-    if (!profileId) return cached;
-    const { data } = await supabase.from('profiles').select('*').eq('id', profileId).maybeSingle();
+    if (!ownProfileId) return (cached && cached.id === ownProfileId) ? cached : null;
+    const { data } = await supabase.from('profiles').select('*').eq('id', ownProfileId).maybeSingle();
     if (data) {
       cacheProfile(data);
       return data;
     }
   } catch { /* silencieux */ }
 
-  return cached; // retourne le cache périmé plutôt que rien
+  // Retourner le cache UNIQUEMENT s'il correspond toujours à l'identité active
+  return (cached && cached.id === ownProfileId) ? cached : null;
 }
 
 // Export de la fonction d'invalidation du cache profil

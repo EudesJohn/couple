@@ -7,15 +7,16 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { colors, spacing, borderRadius } from '../constants/theme';
 import { supabase } from '../lib/supabase';
-import { hashPin, savePinHash, verifyPin, getStoredPinHash } from '../lib/auth';
+import { saveLastUnlock, saveSessionEpoch } from '../lib/auth';
 import { getTheme, saveTheme, saveBackgroundImage, removeBackgroundImage, getBackgroundImage, type ChatTheme } from '../lib/settings';
 import { compressImage, downloadMedia } from '../lib/media';
 import { clearProfileCache } from '../lib/cache';
 import { getOwnProfileId } from '../lib/profile';
 import { requestNotificationPermission } from '../hooks/useNotifications';
+import { useAuth } from '../hooks/useAuth';
 import {
   BackIcon, SettingsIcon, HeartFilledIcon, UserIcon, LockIcon,
-  EditIcon, CameraIcon, CheckIcon, CloseIcon, ImageIcon,
+  EditIcon, CameraIcon, CheckIcon, CloseIcon, ImageIcon, LogOutIcon,
 } from '../components/Icons';
 import { PremiumAlert } from '../components/PremiumAlert';
 
@@ -36,10 +37,10 @@ function ToastFeedback({ message, visible }: { message: string; visible: boolean
     <AnimatePresence>
       {visible && (
         <motion.div
-          initial={{ opacity: 0, y: 60, scale: 0.8 }}
+          initial={{ opacity: 0, y: 24, scale: 0.97 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 60, scale: 0.8 }}
-          transition={{ type: 'spring', damping: 14, stiffness: 180 }}
+          exit={{ opacity: 0, y: 16, scale: 0.97 }}
+          transition={{ type: 'spring', damping: 16, stiffness: 220 }}
           style={{
             display: 'flex', alignItems: 'center', gap: spacing.sm,
             backgroundColor: colors.success,
@@ -62,7 +63,7 @@ function ToastFeedback({ message, visible }: { message: string; visible: boolean
 function PinKey({ label, onPress }: { label: string; onPress: () => void }) {
   return (
     <motion.button
-      whileTap={{ scale: 0.88 }}
+      whileTap={{ scale: 0.94 }}
       onMouseDown={onPress}
       style={{
         width: 64, height: 64, borderRadius: 32,
@@ -81,6 +82,8 @@ function PinKey({ label, onPress }: { label: string; onPress: () => void }) {
 // ==========================================
 export default function SettingsScreen() {
   const navigate = useNavigate();
+  const { lock, disconnect } = useAuth();
+  const [disconnecting, setDisconnecting] = useState(false);
 
   const [displayName, setDisplayName] = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
@@ -246,6 +249,23 @@ export default function SettingsScreen() {
     try {
       const granted = await requestNotificationPermission();
       if (granted) {
+        // Essayer le Service Worker d'abord (nécessaire pour PWA / iOS)
+        if ('serviceWorker' in navigator) {
+          try {
+            const reg = await navigator.serviceWorker.ready;
+            await reg.showNotification('Notre Bulle', {
+              body: '🔔 Notification test — ça marche !',
+              icon: '/icon-192.png',
+              badge: '/icon-192.png',
+              tag: 'notre-bulle-test',
+              vibrate: [200, 100, 200],
+              requireInteraction: true,
+            } as NotificationOptions);
+            showToast('Notification envoyée ✨');
+            return;
+          } catch { /* fallback new Notification */ }
+        }
+        // Fallback Desktop / Android
         const notif = new Notification('Notre Bulle', {
           body: '🔔 Notification test — ça marche !',
           icon: '/icon-192.png',
@@ -303,14 +323,21 @@ export default function SettingsScreen() {
       const newVal = oldPin + key;
       setOldPin(newVal);
       if (newVal.length === 4) {
-        const storedHash = await getStoredPinHash();
-        const valid = storedHash ? await verifyPin(newVal, storedHash) : false;
-        if (valid) {
-          setOldPin('');
-          setPinStep('new');
-        } else {
-          setPinError('Ancien code incorrect');
-          setTimeout(() => setOldPin(''), 400);
+        const profileId = getOwnProfileId();
+        if (!profileId) { setPinError('Identité inconnue'); return; }
+        // L'ancien code est vérifié côté SERVEUR (aucun mot de passe en local)
+        try {
+          const { data } = await supabase.rpc('verify_couple_pin', { p_profile_id: profileId, p_pin: newVal });
+          const ok = Array.isArray(data) ? Boolean(data[0]?.ok) : Boolean(data);
+          if (ok) {
+            setOldPin('');
+            setPinStep('new');
+          } else {
+            setPinError('Ancien code incorrect');
+            setTimeout(() => setOldPin(''), 400);
+          }
+        } catch {
+          setPinError('Connexion impossible');
         }
       }
     } else if (pinStep === 'new' && newPin.length < 4) {
@@ -324,14 +351,33 @@ export default function SettingsScreen() {
       setConfirmPin(newVal);
       if (newVal.length === 4) {
         if (newVal === newPin) {
-          const hash = await hashPin(newVal);
-          await savePinHash(hash);
-          showToast('Code PIN modifié');
-          setShowPinChange(false);
-          setOldPin('');
-          setNewPin('');
-          setConfirmPin('');
-          setPinStep('old');
+          const profileId = getOwnProfileId();
+          if (!profileId) { setPinError('Identité inconnue'); return; }
+          // Changement du code côté serveur : exige l'ancien, puis force la
+          // reconnexion des autres appareils (epoch de session incrémenté).
+          try {
+            const { data } = await supabase.rpc('change_couple_pin', {
+              p_profile_id: profileId,
+              p_old_pin: oldPin,
+              p_new_pin: newVal,
+            });
+            const row = Array.isArray(data) ? data[0] : data;
+            if (row?.ok) {
+              await saveSessionEpoch(Number(row.session_epoch ?? 0));
+              await saveLastUnlock();
+              showToast('Code PIN modifié');
+              setShowPinChange(false);
+              setOldPin('');
+              setNewPin('');
+              setConfirmPin('');
+              setPinStep('old');
+            } else {
+              setPinError('Ancien code incorrect');
+              setTimeout(() => setOldPin(''), 400);
+            }
+          } catch {
+            setPinError('Connexion impossible');
+          }
         } else {
           setPinError('Les codes ne correspondent pas');
           setTimeout(() => setConfirmPin(''), 400);
@@ -446,6 +492,20 @@ export default function SettingsScreen() {
     showToast('Fond d\'écran retiré');
   }, [showToast]);
 
+  // Déconnexion : efface l'identité + PIN → retour onboarding
+  const handleDisconnect = useCallback(async () => {
+    if (disconnecting) return;
+    setDisconnecting(true);
+    try {
+      await disconnect();
+      // RequireAuth (App.tsx) redirige automatiquement vers /
+    } catch {
+      showAlert('error', 'Erreur', 'Impossible de se déconnecter');
+    } finally {
+      setDisconnecting(false);
+    }
+  }, [disconnect, disconnecting, showAlert]);
+
   const pinDots = pinStep === 'old' ? oldPin : pinStep === 'new' ? newPin : confirmPin;
 
   return (
@@ -463,7 +523,7 @@ export default function SettingsScreen() {
         flexShrink: 0,
       }}>
         <motion.button
-          whileTap={{ scale: 0.9 }}
+          whileTap={{ scale: 0.94 }}
           onClick={() => navigate(-1)}
           style={{
             width: 36, height: 36, borderRadius: 18,
@@ -483,9 +543,9 @@ export default function SettingsScreen() {
       <div style={{ flex: 1, overflowY: 'auto', padding: `${spacing.lg}px`, display: 'flex', flexDirection: 'column', gap: 20 }}>
         {/* --- Photo de profil --- */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', damping: 14, stiffness: 120, delay: 0 }}
+          transition={{ type: 'spring', damping: 16, stiffness: 150, delay: 0 }}
           style={{
             backgroundColor: colors.surface,
             borderRadius: borderRadius.xl,
@@ -592,9 +652,9 @@ export default function SettingsScreen() {
 
         {/* --- Pseudo --- */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', damping: 14, stiffness: 120, delay: 0.06 }}
+          transition={{ type: 'spring', damping: 16, stiffness: 150, delay: 0.04 }}
           style={{
             backgroundColor: colors.surface,
             borderRadius: borderRadius.xl,
@@ -648,9 +708,9 @@ export default function SettingsScreen() {
 
         {/* --- Code PIN --- */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', damping: 14, stiffness: 120, delay: 0.12 }}
+          transition={{ type: 'spring', damping: 16, stiffness: 150, delay: 0.08 }}
           style={{
             backgroundColor: colors.surface,
             borderRadius: borderRadius.xl,
@@ -722,9 +782,9 @@ export default function SettingsScreen() {
 
         {/* --- Thème --- */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', damping: 14, stiffness: 120, delay: 0.18 }}
+          transition={{ type: 'spring', damping: 16, stiffness: 150, delay: 0.12 }}
           style={{
             backgroundColor: colors.surface,
             borderRadius: borderRadius.xl,
@@ -801,11 +861,77 @@ export default function SettingsScreen() {
           </div>
         </motion.div>
 
+        {/* --- Session / Verrou --- */}
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: 'spring', damping: 16, stiffness: 150, delay: 0.18 }}
+          style={{
+            backgroundColor: colors.surface,
+            borderRadius: borderRadius.xl,
+            padding: spacing.xl,
+            boxShadow: `0 2px 10px ${colors.shadow}`,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.lg }}>
+            <LockIcon size={15} color={colors.primary} />
+            <span style={{ fontSize: 15, fontWeight: 600, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.6 }}>
+              Session
+            </span>
+          </div>
+
+          <p style={{
+            fontSize: 13, color: colors.textTertiary,
+            margin: 0, marginBottom: spacing.lg, lineHeight: '20px',
+          }}>
+            L’app reste ouverte pendant 24 h. Tu peux la verrouiller ou te déconnecter à tout moment.
+          </p>
+
+          <motion.button
+            whileTap={{ scale: 0.97 }}
+            onClick={lock}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
+              width: '100%', padding: `${spacing.md}px 0`,
+              borderRadius: borderRadius.md,
+              backgroundColor: colors.surfaceAlt,
+              border: `1px solid ${colors.border}`,
+              cursor: 'pointer', fontFamily: 'inherit',
+              marginBottom: spacing.md,
+            }}
+          >
+            <LockIcon size={16} color={colors.primary} />
+            <span style={{ color: colors.primary, fontWeight: 600, fontSize: 14 }}>
+              Verrouiller maintenant
+            </span>
+          </motion.button>
+
+          <motion.button
+            whileTap={{ scale: 0.97 }}
+            onClick={handleDisconnect}
+            disabled={disconnecting}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
+              width: '100%', padding: `${spacing.md}px 0`,
+              borderRadius: borderRadius.md,
+              backgroundColor: `${colors.error}10`,
+              border: `1px solid ${colors.error}30`,
+              cursor: 'pointer', fontFamily: 'inherit',
+              opacity: disconnecting ? 0.5 : 1,
+            }}
+          >
+            <LogOutIcon size={16} color={colors.error} />
+            <span style={{ color: colors.error, fontWeight: 600, fontSize: 14 }}>
+              {disconnecting ? 'Déconnexion…' : 'Se déconnecter'}
+            </span>
+          </motion.button>
+        </motion.div>
+
         {/* --- Fond d'écran --- */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', damping: 14, stiffness: 120, delay: 0.24 }}
+          transition={{ type: 'spring', damping: 16, stiffness: 150, delay: 0.16 }}
           style={{
             backgroundColor: colors.surface,
             borderRadius: borderRadius.xl,
@@ -882,9 +1008,9 @@ export default function SettingsScreen() {
 
       {/* --- Notifications --- */}
       <motion.div
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ type: 'spring', damping: 14, stiffness: 120, delay: 0.30 }}
+        transition={{ type: 'spring', damping: 16, stiffness: 150, delay: 0.20 }}
         style={{
           backgroundColor: colors.surface,
           borderRadius: borderRadius.xl,

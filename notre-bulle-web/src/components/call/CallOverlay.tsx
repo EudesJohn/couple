@@ -58,7 +58,7 @@ function MiniControlBtn({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
       <motion.button
-        whileTap={{ scale: 0.85 }}
+        whileTap={{ scale: 0.93 }}
         onClick={onClick}
         aria-label={label}
         style={{
@@ -93,6 +93,28 @@ export default function CallOverlay() {
     callState, callType, callDuration, isMuted,
     toggleMute, endCall,
   } = useCall();
+
+  const pipCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pipTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Flux combiné (canvas + audio distant) passé à l'élément PiP en appel audio.
+  // Garde en ref pour pouvoir arrêter la piste canvas à la fermeture.
+  const pipStreamRef = useRef<MediaStream | null>(null);
+  const durationRef = useRef(0);
+  durationRef.current = callDuration;
+
+  // Reflète l'état de la fenêtre flottante OS (enter/leave picture-in-picture).
+  // Sert à couper la miniature de l'overlay pour éviter le double audio
+  // quand le PiP prend le relais du son.
+  const [isInPip, setIsInPip] = useState(false);
+
+  const isVideo = callType === 'video';
+  const isOnCallScreen = location.pathname === '/call';
+  const notIdle = ['calling', 'ringing', 'connecting', 'connected', 'ended'].includes(callState);
+  const statusLabel = statusTexts[callState] || '';
+  const showDuration = callState === 'connected';
+  const statusLine = showDuration ? formatDuration(callDuration) : statusLabel;
+  const pipSupported = isPiPSupported();
+  const pipActive = typeof document !== 'undefined' && !!document.pictureInPictureElement;
 
   // ==========================================
   // DRAG STATE (refs pour éviter re-renders)
@@ -148,27 +170,116 @@ export default function CallOverlay() {
   // PiP — attacher le flux distant à l'élément
   // vidéo PiP et enregistrer la référence
   // ==========================================
+
+  // Dessine un cercle + cœur sobre sur fond transparent pour le PiP audio
+  const drawAudioPipCanvas = useCallback((canvas: HTMLCanvasElement) => {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const w = canvas.width, h = canvas.height;
+    // Fond transparent
+    ctx.clearRect(0, 0, w, h);
+    // Cercle fin
+    const cx = w / 2, cy = h * 0.28, r = Math.min(w, h) * 0.18;
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    // Cœur blanc à l'intérieur
+    const s = r * 0.55;
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + s * 0.35);
+    ctx.bezierCurveTo(cx - s * 0.6, cy - s * 0.15, cx, cy - s * 0.7, cx, cy - s * 0.15);
+    ctx.bezierCurveTo(cx, cy - s * 0.7, cx + s * 0.6, cy - s * 0.15, cx, cy + s * 0.35);
+    ctx.fill();
+    // Label
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.font = `${Math.round(w * 0.06)}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Appel audio', cx, h * 0.55);
+    // Durée
+    const d = durationRef.current;
+    const mins = Math.floor(d / 60);
+    const secs = d % 60;
+    const ts = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.font = `${Math.round(w * 0.045)}px system-ui, sans-serif`;
+    ctx.fillText(ts, cx, h * 0.64);
+  }, []);
+
+  const cleanupAudioPip = useCallback(() => {
+    if (pipTimerRef.current) { clearInterval(pipTimerRef.current); pipTimerRef.current = null; }
+    // Arrêter seulement la piste vidéo du canvas — jamais l'audio distant,
+    // qui appartient au remoteStream partagé (sinon on coupe le son du partenaire).
+    if (pipStreamRef.current) {
+      pipStreamRef.current.getVideoTracks().forEach(t => t.stop());
+      pipStreamRef.current = null;
+    }
+    pipCanvasRef.current = null;
+  }, []);
+
+  // Effet principal PiP : gère le flux vidéo (vidéo) ou le canvas (audio)
   useEffect(() => {
     const el = pipVideoRef.current;
-    if (el && remoteStream) {
+    if (!el) { setPipVideoElement(null); return; }
+
+    if (isVideo && remoteStream) {
+      // Appel vidéo : utiliser le flux distant
+      cleanupAudioPip();
       el.srcObject = remoteStream;
+    } else if (!isVideo && callState === 'connected') {
+      // Appel audio : canvas (cœur + durée) + piste audio distante.
+      // Sans la piste audio, la fenêtre PiP serait muette et l'audio de
+      // l'appel serait perdu dès que CallScreen est démonté (minimisation).
+      cleanupAudioPip();
+      const canvas = document.createElement('canvas');
+      canvas.width = 320;
+      canvas.height = 480;
+      pipCanvasRef.current = canvas;
+      drawAudioPipCanvas(canvas);
+      try {
+        const canvasStream = canvas.captureStream(4);
+        const combined = new MediaStream(canvasStream.getVideoTracks());
+        if (remoteStream) {
+          remoteStream.getAudioTracks().forEach(t => combined.addTrack(t));
+        }
+        pipStreamRef.current = combined;
+        el.srcObject = combined;
+        pipTimerRef.current = setInterval(() => drawAudioPipCanvas(canvas), 1000);
+      } catch (e) {
+        console.warn('[PiP] captureStream non supporté:', e);
+      }
     }
+
     setPipVideoElement(el);
 
+    // Suivre l'état de la fenêtre flottante : pendant le PiP, l'élément PiP
+    // est démuet (dans requestPictureInPicture) et porte le son de l'appel ;
+    // la miniature de l'overlay doit donc être coupée pour éviter l'écho.
+    const onEnterPip = () => {
+      setIsInPip(true);
+    };
     // Quand l'utilisateur ferme la fenêtre PiP (bouton X ou retour),
-    // on le ramène vers l'écran d'appel si l'appel est toujours actif
+    // on rend le son à l'élément principal et on revient sur l'écran d'appel.
     const onLeavePip = () => {
+      el.muted = true;
+      setIsInPip(false);
       if (callState === 'connected') {
         navigate('/call');
       }
     };
-    el?.addEventListener('leavepictureinpicture', onLeavePip);
+    el.addEventListener('enterpictureinpicture', onEnterPip);
+    el.addEventListener('leavepictureinpicture', onLeavePip);
 
     return () => {
       setPipVideoElement(null);
-      el?.removeEventListener('leavepictureinpicture', onLeavePip);
+      cleanupAudioPip();
+      el.removeEventListener('enterpictureinpicture', onEnterPip);
+      el.removeEventListener('leavepictureinpicture', onLeavePip);
     };
-  }, [remoteStream, callState, navigate]);
+  }, [remoteStream, callState, navigate, isVideo, drawAudioPipCanvas, cleanupAudioPip]);
 
   // Sortir du PiP quand l'appel se termine
   useEffect(() => {
@@ -232,18 +343,8 @@ export default function CallOverlay() {
     }
   }, [callState, navigate]);
 
-  // ─── LOGIQUE CONDITIONNELLE (ne change pas le nombre de hooks) ───
-  const isOnCallScreen = location.pathname === '/call';
-  const isVideo = callType === 'video';
-  const notIdle = ['calling', 'ringing', 'connecting', 'connected', 'ended'].includes(callState);
-  const statusLabel = statusTexts[callState] || '';
-  const showDuration = callState === 'connected';
-  const statusLine = showDuration ? formatDuration(callDuration) : statusLabel;
-
   // ─── PAS DE RETURN ANTICIPÉ — on utilise AnimatePresence pour
   //     contrôler l'affichage, ce qui préserve le nombre de hooks ───
-  const pipSupported = isPiPSupported();
-  const pipActive = typeof document !== 'undefined' && !!document.pictureInPictureElement;
 
   return (
     <>
@@ -253,7 +354,7 @@ export default function CallOverlay() {
           est appelé, ce qui crée une vraie fenêtre flottante OS.
           Ne doit PAS être dans AnimatePresence car il doit survivre
           au démontage de CallScreen. */}
-      {notIdle && isVideo && (
+      {notIdle && (
         <video
           ref={pipVideoRef}
           autoPlay
@@ -270,7 +371,7 @@ export default function CallOverlay() {
         />
       )}
 
-      {pipActive && isVideo && notIdle && (
+      {pipActive && notIdle && (
         <div style={{
           position: 'fixed', top: 16, left: 16, zIndex: 9999,
           display: 'flex', gap: 8,
@@ -375,6 +476,7 @@ export default function CallOverlay() {
                   ref={remoteVideoRef}
                   autoPlay
                   playsInline
+                  muted={isInPip}
                   style={{
                     width: '100%', height: '100%', objectFit: 'cover',
                     opacity: remoteStream ? 1 : 0,
@@ -438,7 +540,7 @@ export default function CallOverlay() {
                   }
                 </MiniControlBtn>
 
-                {isVideo && pipSupported && (
+                {pipSupported && (
                   <MiniControlBtn
                     onClick={(e) => { e.stopPropagation(); requestPictureInPicture(); }}
                     label="PiP"

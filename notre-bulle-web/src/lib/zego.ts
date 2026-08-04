@@ -590,13 +590,22 @@ export function requestPictureInPicture(): boolean {
   const video = _pipVideoElement;
   if (!video) return false;
   if (document.pictureInPictureElement) return true; // déjà en PiP
+
+  // La fenêtre PiP doit être AUDIBLE : on retire la sourdine AVANT la
+  // demande (dans le geste utilisateur), sinon le PiP reste muet.
+  // L'élément PiP est normalement muted pour éviter le double audio
+  // avec CallScreen ; on ne le démuet que pour la durée du PiP.
+  video.muted = false;
+
   try {
-    video.requestPictureInPicture().catch((err: any) =>
-      console.warn('[PiP] Erreur entrée PiP:', err)
-    );
+    video.requestPictureInPicture().catch((err: any) => {
+      console.warn('[PiP] Erreur entrée PiP:', err);
+      video.muted = true; // restauration si l'entrée en PiP a échoué
+    });
     return true;
   } catch (err) {
     console.warn('[PiP] Erreur entrée PiP:', err);
+    video.muted = true;
     return false;
   }
 }
@@ -604,6 +613,11 @@ export function requestPictureInPicture(): boolean {
 export function exitPictureInPicture(): void {
   if (document.pictureInPictureElement) {
     document.exitPictureInPicture().catch(() => {});
+  }
+  // Remettre la sourdine : hors PiP, l'audio est rendu par l'élément
+  // vidéo principal (CallScreen / overlay), pas par l'élément PiP.
+  if (_pipVideoElement) {
+    _pipVideoElement.muted = true;
   }
 }
 

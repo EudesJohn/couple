@@ -2,7 +2,7 @@
 // ChatInput premium — Texte, médias, notes vocales, Reply Preview
 // Design Burgundy & Gold, Framer Motion
 // ============================================================
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { colors, borderRadius, spacing } from '../../constants/theme';
 import { VoiceRecorder } from '../media/VoiceRecorder';
@@ -113,6 +113,16 @@ export function ChatInput({
     }
   }, [recordedUri, recordedDuration, onSendVoice, cancelRecording]);
 
+  // Quand on choisit un message à répondre (swipe → Reply Preview),
+  // on ouvre le clavier automatiquement pour écrire sa réponse.
+  useEffect(() => {
+    if (!replyTo) return;
+    const t = setTimeout(() => {
+      textareaRef.current?.focus();
+    }, 100);
+    return () => clearTimeout(t);
+  }, [replyTo]);
+
   if (showRecorder) {
     return (
       <VoiceRecorder
@@ -146,7 +156,7 @@ export function ChatInput({
       }}>
         {/* Media button */}
         <motion.button
-          whileTap={{ scale: 0.88 }}
+          whileTap={{ scale: 0.93 }}
           onClick={handleMediaPress}
           aria-label="Joindre un média"
           style={{
@@ -197,7 +207,7 @@ export function ChatInput({
 
         {/* Mic button */}
         <motion.button
-          whileTap={{ scale: 0.88 }}
+          whileTap={{ scale: 0.93 }}
           onClick={handleMicPress}
           aria-label="Message vocal"
           style={{
@@ -212,7 +222,7 @@ export function ChatInput({
 
         {/* Send button */}
         <motion.button
-          whileTap={{ scale: 0.88 }}
+          whileTap={{ scale: 0.93 }}
           onClick={handleSendText}
           disabled={!hasText}
           aria-label="Envoyer le message"

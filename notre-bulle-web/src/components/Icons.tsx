@@ -146,6 +146,9 @@ export const DoubleCheckIcon = ({ size = 24, color = colors.text }: IconProps) =
   </svg>
 );
 
+// Téléchargement (flèche vers le bas)
+export const DownloadIcon = createIcon('M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3');
+
 // Étoile / Sparkle
 export const SparkleIcon = createIcon('M12 2l1.5 5.5L19 9l-5.5 1.5L12 16l-1.5-5.5L5 9l5.5-1.5L12 2z M9 15l-3 3m3 0l-3-3 M16 18l-2 2m2 0l-2-2');
 
