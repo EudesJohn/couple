@@ -55,9 +55,17 @@ class WebRTCManager {
   private localStreamPromise: Promise<void> | null = null;
   private resolveLocalStream: (() => void) | null = null;
 
-  // Callback appelé immédiatement quand le flux distant change
-  // (évite le polling 500ms dans CallScreen qui cause des sauts)
-  private onRemoteStreamReady: ((stream: MediaStream) => void) | null = null;
+  // Callbacks appelés immédiatement quand le flux distant change
+  // (évite le polling). Désormais une SET : CallScreen ET CallOverlay
+  // s'enregistrent chacun, sinon le dernier écrase l'autre et l'overlay
+  // (porteuse du son en PiP audio) ne reçoit jamais le flux distant.
+  private onRemoteStreamReady: Set<(stream: MediaStream) => void> = new Set();
+
+  addRemoteStreamReadyListener(cb: (stream: MediaStream) => void): () => void {
+    this.onRemoteStreamReady.add(cb);
+    const self = this;
+    return () => { self.onRemoteStreamReady.delete(cb); };
+  }
 
   // Récupère les credentials TURN frais depuis l'API Metered.ca
   private async fetchIceServers(): Promise<RTCIceServer[]> {
@@ -88,8 +96,9 @@ class WebRTCManager {
     return servers;
   }
 
-  setOnRemoteStreamReady(cb: ((stream: MediaStream) => void) | null): void {
-    this.onRemoteStreamReady = cb;
+  setOnRemoteStreamReady(cb: ((stream: MediaStream) => void) | null): () => void {
+    if (cb) return this.addRemoteStreamReadyListener(cb);
+    return () => {}; // null → no-op (rétrocompat)
   }
 
   async joinRoom(roomID: string, user: CallUser): Promise<void> {
@@ -132,9 +141,9 @@ class WebRTCManager {
       const streamId = stream?.id || 'remote';
       this.remoteStreamId = streamId;
 
-      // Callback immédiat pour que CallScreen attache le flux sans délai
-      if (this.remoteStream && this.onRemoteStreamReady) {
-        this.onRemoteStreamReady(this.remoteStream);
+      // Callback immédiat : tous les abonnés (CallScreen + CallOverlay) attachent le flux
+      if (this.remoteStream) {
+        this.onRemoteStreamReady.forEach(fn => fn(this.remoteStream!));
       }
 
       onRemoteStreamUpdate?.([{ streamID: streamId }], true);
@@ -597,8 +606,12 @@ export function setOnRemoteStreamUpdate(cb: ((streams: any[], added: boolean) =>
   onRemoteStreamUpdate = cb;
 }
 
-export function setOnRemoteStreamReady(cb: ((stream: MediaStream) => void) | null): void {
-  getWebRTC().setOnRemoteStreamReady(cb);
+/** Enregistre un abonnement au flux distant. Retourne une fonction pour se
+ *  désabonner (au lieu de `null`, qui ne pouvait pas retirer UN SEUL callback
+ *  parmi plusieurs abonnés). */
+export function setOnRemoteStreamReady(cb: ((stream: MediaStream) => void) | null): () => void {
+  if (!cb) return () => {};
+  return getWebRTC().addRemoteStreamReadyListener(cb);
 }
 
 export async function joinRoom(roomID: string, user: CallUser): Promise<void> {

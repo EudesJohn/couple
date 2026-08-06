@@ -160,22 +160,28 @@ export default function CallOverlay() {
 
   // Callback immédiat pour le flux distant
   useEffect(() => {
-    setOnRemoteStreamReady((stream) => {
+    const unsub = setOnRemoteStreamReady((stream) => {
       setRemoteStream(stream);
       if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== stream) {
         remoteVideoRef.current.srcObject = stream;
       }
     });
-    return () => setOnRemoteStreamReady(null);
+    return () => unsub();
   }, []);
 
-  // Fallback polling pour le flux distant (rattrapage)
+  // Fallback polling pour le flux distant (rattrapage). MISE À JOUR : on
+  // renseigne l'état `remoteStream` même sans élément vidéo, car en appel
+  // AUDIO il n'y a pas de remoteVideoRef — et c'est pourtant ce flux qui
+  // fournit la piste audio au canvas PiP. Sans ça l'overlay n'avait aucun
+  // flux audio et on perdait le son en minimisant/passant en PiP.
   useEffect(() => {
     const interval = setInterval(() => {
       const streams = getWebRTCStreams();
-      if (streams.remote && remoteVideoRef.current && remoteVideoRef.current.srcObject !== streams.remote) {
+      if (streams.remote) {
+        setRemoteStream((prev) => (prev === streams.remote ? prev : streams.remote));
+      }
+      if (remoteVideoRef.current && streams.remote && remoteVideoRef.current.srcObject !== streams.remote) {
         remoteVideoRef.current.srcObject = streams.remote;
-        setRemoteStream(streams.remote);
       }
     }, 1000);
     return () => clearInterval(interval);

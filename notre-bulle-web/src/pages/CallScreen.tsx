@@ -240,7 +240,7 @@ export default function CallScreen() {
 
   // Web: callback immédiat quand le flux distant arrive
   useEffect(() => {
-    setOnRemoteStreamReady((stream) => {
+    const unsub = setOnRemoteStreamReady((stream) => {
       if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== stream) {
         remoteVideoRef.current.srcObject = stream;
       }
@@ -249,7 +249,7 @@ export default function CallScreen() {
         return { ...prev, remote: stream };
       });
     });
-    return () => setOnRemoteStreamReady(null);
+    return () => unsub();
   }, []);
 
   // Web: fallback polling basse fréquence
