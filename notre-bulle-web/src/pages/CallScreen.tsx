@@ -8,13 +8,13 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getWebRTCStreams, setOnRemoteStreamReady, requestPictureInPicture, exitPictureInPicture, isPiPSupported } from '../lib/zego';
+import { getWebRTCStreams, setOnRemoteStreamReady, requestPictureInPicture, exitPictureInPicture, isPiPSupported } from '../lib/webrtc';
 import { colors, borderRadius } from '../constants/theme';
 import { useCall } from '../hooks/useCall';
 import { useAuth } from '../hooks/useAuth';
 import {
   HeartFilledIcon, UserIcon, MicIcon, MicOffIcon,
-  VolumeIcon, PhoneOffIcon, FlipCameraIcon,
+  VolumeIcon, PhoneOffIcon, FlipCameraIcon, VideoIcon,
 } from '../components/Icons';
 
 // ==========================================
@@ -230,7 +230,7 @@ export default function CallScreen() {
 
   const {
     callState, callType, callDuration, isMuted, isSpeakerOn,
-    toggleMute, toggleSpeakerFn, endCall, switchCamera,
+    toggleMute, toggleSpeakerFn, endCall, switchCamera, enableVideo,
   } = useCall();
 
   const [webRTCStreams, setWebRTCStreams] = useState<{ local: MediaStream | null; remote: MediaStream | null }>({ local: null, remote: null });
@@ -310,6 +310,14 @@ export default function CallScreen() {
   const isVideo = callType === 'video' || routeType === 'video';
   const isConnected = callState === 'connected';
   const isCalling = callState === 'calling' || callState === 'ringing';
+
+  // Caméra locale déjà active ? Sinon le bouton caméra active la vidéo
+  // (passage audio → vidéo à la volée, comme WhatsApp).
+  const localHasVideo = (webRTCStreams.local?.getVideoTracks().length ?? 0) > 0;
+  const handleCamera = () => {
+    if (localHasVideo) switchCamera();
+    else enableVideo();
+  };
 
   const statusColors: Record<string, string> = {
     calling: colors.textSecondary, ringing: colors.warning,
@@ -520,11 +528,17 @@ export default function CallScreen() {
             </span>
           </div>
 
-          {isVideo && (
-            <ControlBtn onPress={switchCamera} label="Caméra">
-              <FlipCameraIcon size={20} color="#FAFAF9" />
-            </ControlBtn>
-          )}
+          {/* Bouton caméra : active la vidéo si en appel audio, sinon
+              bascule avant/arrière (comme WhatsApp). Toujours visible. */}
+          <ControlBtn
+            onPress={handleCamera}
+            label={localHasVideo || isVideo ? 'Caméra' : 'Vidéo'}
+          >
+            {localHasVideo || isVideo
+              ? <FlipCameraIcon size={20} color="#FAFAF9" />
+              : <VideoIcon size={20} color={colors.accent} />
+            }
+          </ControlBtn>
         </div>
       </motion.div>
     </div>

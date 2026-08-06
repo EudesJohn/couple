@@ -1,19 +1,14 @@
 // ============================================================
 // Couche d'abstraction Appels Audio/Vidéo — WebRTC
-// Web uniquement (plus de Zego native mobile)
+// Web : RTCPeerConnection + signalisation Supabase Realtime
 // ============================================================
 import { supabase } from './supabase';
 import { config } from '../constants/config';
 
 // ==========================================================
-// Types
+// Types (rétrocompatibles)
 // ==========================================================
-export const ZegoViewMode = {
-  AspectFill: 0,
-  AspectFit: 1,
-} as const;
-
-export type ZegoStream = any;
+type StreamID = string;
 
 interface CallUser {
   userID: string;
@@ -22,6 +17,14 @@ interface CallUser {
 
 let onRemoteStreamUpdate: ((streams: any[], added: boolean) => void) | null = null;
 let onConnectionStateChange: ((state: string) => void) | null = null;
+
+// Callback déclenché quand le partenaire bascule l'appel audio → vidéo.
+// Permet à l'autre côté de passer son UI en mode vidéo (bouton caméra).
+let onUpgradeToVideo: (() => void) | null = null;
+
+export function setOnUpgradeToVideo(cb: (() => void) | null): void {
+  onUpgradeToVideo = cb;
+}
 
 export function setOnConnectionStateChange(cb: ((state: string) => void) | null): void {
   onConnectionStateChange = cb;
@@ -114,11 +117,19 @@ class WebRTCManager {
       if (!this.remoteStream) {
         this.remoteStream = new MediaStream();
       }
-      event.streams[0].getTracks().forEach(track => {
-        this.remoteStream!.addTrack(track);
-      });
+      // Garde-fou : streams[0] peut être absent sur certains navigateurs
+      // (piste ajoutée sans association à un flux). On ajoute quand même la
+      // piste au flux distant partagé.
+      const stream = event.streams[0];
+      if (stream) {
+        stream.getTracks().forEach(track => {
+          this.remoteStream!.addTrack(track);
+        });
+      } else {
+        event.track && this.remoteStream.addTrack(event.track);
+      }
 
-      const streamId = event.streams[0]?.id || 'remote';
+      const streamId = stream?.id || 'remote';
       this.remoteStreamId = streamId;
 
       // Callback immédiat pour que CallScreen attache le flux sans délai
@@ -144,7 +155,9 @@ class WebRTCManager {
     this.signalChannel
       .on('broadcast', { event: 'sdp-offer' }, ({ payload }: any) => this.handleOffer(payload))
       .on('broadcast', { event: 'sdp-answer' }, ({ payload }: any) => this.handleAnswer(payload))
-      .on('broadcast', { event: 'ice-candidate' }, ({ payload }: any) => this.handleIceCandidate(payload));
+      .on('broadcast', { event: 'ice-candidate' }, ({ payload }: any) => this.handleIceCandidate(payload))
+      // Passage audio → vidéo demandé par le partenaire : basculer notre UI en vidéo
+      .on('broadcast', { event: 'upgrade-to-video' }, () => onUpgradeToVideo?.());
 
     await this.signalChannel.subscribe();
   }
@@ -485,6 +498,69 @@ class WebRTCManager {
     }
   }
 
+  // ==========================================================
+  // Passage audio → vidéo en cours d'appel (rénégociation SDP)
+  // ==========================================================
+
+  /** Active la caméra locale et renégocie pour envoyer la vidéo au partenaire.
+   *  Idempotent : ne fait rien si une piste vidéo locale est déjà active. */
+  async enableVideo(): Promise<boolean> {
+    if (this.localStream?.getVideoTracks().length) return true; // déjà en vidéo
+
+    try {
+      // Étape 1 : capturer la caméra (mêmes contraintes qu'à l'init de l'appel)
+      const videoStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 480, max: 640 },
+          height: { ideal: 288, max: 480 },
+          frameRate: { ideal: 20, max: 24 },
+        },
+        audio: false,
+      });
+      const vTrack = videoStream.getVideoTracks()[0];
+      if (!vTrack) {
+        videoStream.getTracks().forEach(t => t.stop());
+        return false;
+      }
+
+      // Étape 2 : ajouter la piste au flux local (en appel audio, il contient déjà l'audio)
+      if (!this.localStream) this.localStream = new MediaStream();
+      this.localStream.addTrack(vTrack);
+
+      // Étape 3 : envoyer la piste via la RTCPeerConnection (nouveau sender)
+      if (this.pc) this.pc.addTrack(vTrack, this.localStream);
+
+      // Étape 4 : prévenir le partenaire (bascule d'UI) puis renégocier l'offre SDP.
+      // Le broadcast part en premier pour que le partenaire affiche la vidéo dès
+      // que la piste arrive (l'ordre des deux messages n'est pas garanti).
+      await this.sendUpgradeToVideo();
+      await this.renegotiate();
+      return true;
+    } catch (err) {
+      console.warn('[WebRTC] Échec activation vidéo:', err);
+      return false;
+    }
+  }
+
+  isVideoEnabled(): boolean {
+    return !!this.localStream?.getVideoTracks().length;
+  }
+
+  private async renegotiate(): Promise<void> {
+    if (!this.pc) return;
+    // Pas de garde offerSent ici : on veut pouvoir renégocier à volonté
+    // (ajout d'une piste vidéo en cours d'appel).
+    const offer = await this.pc.createOffer();
+    await this.pc.setLocalDescription(offer);
+    await this.limitVideoBitrate();
+    await this.sendSignal('sdp-offer', { sdp: offer.sdp, type: offer.type });
+  }
+
+  private async sendUpgradeToVideo(): Promise<void> {
+    if (!this.signalChannel) return;
+    await this.signalChannel.send({ type: 'broadcast', event: 'upgrade-to-video', payload: {} });
+  }
+
   getLocalStream(): MediaStream | null { return this.localStream; }
   getRemoteStream(): MediaStream | null { return this.remoteStream; }
   getRemoteStreamId(): string | null { return this.remoteStreamId; }
@@ -505,7 +581,7 @@ function getWebRTC(): WebRTCManager {
 // API publique
 // ==========================================================
 
-export async function isZegoAvailable(): Promise<boolean> {
+export async function isWebRTCAvailable(): Promise<boolean> {
   return true; // WebRTC toujours disponible
 }
 
@@ -564,6 +640,16 @@ export async function muteMicrophone(muted: boolean): Promise<void> {
 
 export async function switchCamera(): Promise<boolean> {
   return getWebRTC().switchCamera();
+}
+
+/** Active la caméra pour passer un appel audio en appel vidéo à la volée. */
+export async function enableVideo(): Promise<boolean> {
+  return getWebRTC().enableVideo();
+}
+
+/** Vrai si la caméra locale est déjà active. */
+export function isVideoEnabled(): boolean {
+  return getWebRTC().isVideoEnabled();
 }
 
 export async function destroy(): Promise<void> {
@@ -628,13 +714,28 @@ export function requestPictureInPicture(): boolean {
     return true; // déjà en PiP
   }
 
-  // La fenêtre PiP doit être AUDIBLE. Deux choses, DANS le geste :
+  // La fenêtre PiP doit être AUDIBLE. Trois choses, DANS le geste :
   //  1. On retire la sourdine AVANT la demande — sinon Chrome crée une
   //     fenêtre PiP muette (état loché à l'ouverture sur Android).
-  //  2. setPipWantsAudio(true) SYNCHRONE : CallOverlay re-render tout de
+  //  2. On s'assure que l'élément est EN LECTURE (pas en pause) : une fenêtre
+  //     PiP ouverte sur un élément en pause peut figer l'audio au démarrage.
+  //  3. setPipWantsAudio(true) SYNCHRONE : CallOverlay re-render tout de
   //     suite avec pipShouldBeAudible = true, donc la prop React ne re-mutera
   //     jamais l'élément pendant l'ouverture (voir explication ci-dessus).
   video.muted = false;
+  if (video.paused) {
+    video.play().catch(() => {});
+  }
+  // Fallback : si la métadonnée vidéo n'a pas encore chargé, on donne un format
+  // de base à la fenêtre au moment de l'ouverture (évite une fenêtre 1×1
+  // aplatie/déformée et le mauvais routage audio qui va avec). Le reste du
+  // temps, la taille est pilotée par l'état React `pipVideoSize` de CallOverlay
+  // (loadedmetadata / resize).
+  if (video.videoWidth && video.videoHeight) {
+    const scale = Math.min(1, 960 / Math.max(video.videoWidth, 1));
+    video.style.width = `${Math.round(video.videoWidth * scale)}px`;
+    video.style.height = `${Math.round(video.videoHeight * scale)}px`;
+  }
   setPipWantsAudio(true);
 
   try {

@@ -14,12 +14,12 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useCall } from '../../hooks/useCall';
-import { getWebRTCStreams, setOnRemoteStreamReady } from '../../lib/zego';
+import { getWebRTCStreams, setOnRemoteStreamReady } from '../../lib/webrtc';
 import { colors, borderRadius } from '../../constants/theme';
 import {
   MicIcon, MicOffIcon, PhoneOffIcon, VideoIcon, FlipCameraIcon,
 } from '../Icons';
-import { setPipVideoElement, requestPictureInPicture, exitPictureInPicture, isPiPSupported, subscribePipWantsAudio, isPipWantsAudio, setPipWantsAudio } from '../../lib/zego';
+import { setPipVideoElement, requestPictureInPicture, exitPictureInPicture, isPiPSupported, subscribePipWantsAudio, isPipWantsAudio, setPipWantsAudio } from '../../lib/webrtc';
 
 // ==========================================
 // FORMATAGE DURÉE D'APPEL
@@ -91,11 +91,15 @@ export default function CallOverlay() {
 
   const {
     callState, callType, callDuration, isMuted,
-    toggleMute, endCall,
+    toggleMute, endCall, switchCamera, enableVideo,
   } = useCall();
 
   const pipCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const pipTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Taille de l'élément vidéo PiP, pilotée par l'état React. Sans ça, le timer
+  // de durée (un re-render chaque seconde) réappliquerait width/height = 1×1 et
+  // déformerait la fenêtre flottante (image aplatie/étirée).
+  const [pipVideoSize, setPipVideoSize] = useState({ width: 1, height: 1 });
   // Flux combiné (canvas + audio distant) passé à l'élément PiP en appel audio.
   // Garde en ref pour pouvoir arrêter la piste canvas à la fermeture.
   const pipStreamRef = useRef<MediaStream | null>(null);
@@ -106,7 +110,7 @@ export default function CallOverlay() {
   // Sert à couper la miniature de l'overlay pour éviter le double audio
   // quand le PiP prend le relais du son.
   //
-  // Source de vérité partagée (zego.ts) : `requestPictureInPicture()` positionne
+  // Source de vérité partagée (webrtc.ts) : `requestPictureInPicture()` positionne
   // `pipWantsAudio` SYNCHRONEMENT dans le geste utilisateur. Sans ça, l'entrée
   // en PiP depuis CallScreen (bouton Minimiser) laisserait isInPip à false
   // jusqu'à l'événement asynchrone `enterpictureinpicture`, et le re-render du
@@ -243,10 +247,31 @@ export default function CallOverlay() {
     const el = pipVideoRef.current;
     if (!el) { setPipVideoElement(null); return; }
 
+    // Calibre l'élément PiP aux dimensions RÉELLES du flux (vidéo distante ou
+    // canvas audio) via l'état React `pipVideoSize`, appliqué au style de
+    // l'élément. Sans ça, le timer de durée (un re-render chaque seconde)
+    // ré-appliquait width/height = 1×1 et le navigateur étirait/aplatissait
+    // la fenêtre flottante (image déformée). `loadedmetadata` / `resize`
+    // couvrent aussi les changements de résolution en cours d'appel
+    // (audio → vidéo, bascule de caméra, re-négociation SDP).
+    const updatePipSize = () => {
+      if (el.videoWidth && el.videoHeight) {
+        const scale = Math.min(1, 960 / Math.max(el.videoWidth, 1));
+        setPipVideoSize({
+          width: Math.round(el.videoWidth * scale),
+          height: Math.round(el.videoHeight * scale),
+        });
+      }
+    };
+    const onPipVideoMeta = () => updatePipSize();
+    el.addEventListener('loadedmetadata', onPipVideoMeta);
+    el.addEventListener('resize', onPipVideoMeta);
+
     if (isVideo && remoteStream) {
       // Appel vidéo : utiliser le flux distant
       cleanupAudioPip();
       el.srcObject = remoteStream;
+      updatePipSize();
     } else if (!isVideo && callState === 'connected') {
       // Appel audio : canvas (cœur + durée) + piste audio distante.
       // Sans la piste audio, la fenêtre PiP serait muette et l'audio de
@@ -265,6 +290,7 @@ export default function CallOverlay() {
         }
         pipStreamRef.current = combined;
         el.srcObject = combined;
+        updatePipSize();
         pipTimerRef.current = setInterval(() => drawAudioPipCanvas(canvas), 1000);
       } catch (e) {
         console.warn('[PiP] captureStream non supporté:', e);
@@ -296,6 +322,8 @@ export default function CallOverlay() {
     return () => {
       setPipVideoElement(null);
       cleanupAudioPip();
+      el.removeEventListener('loadedmetadata', onPipVideoMeta);
+      el.removeEventListener('resize', onPipVideoMeta);
       el.removeEventListener('enterpictureinpicture', onEnterPip);
       el.removeEventListener('leavepictureinpicture', onLeavePip);
     };
@@ -383,7 +411,8 @@ export default function CallOverlay() {
           disablePictureInPicture={false}
           style={{
             position: 'fixed',
-            width: 1, height: 1,
+            width: pipVideoSize.width,
+            height: pipVideoSize.height,
             opacity: 0,
             pointerEvents: 'none',
             zIndex: -1,
@@ -557,6 +586,18 @@ export default function CallOverlay() {
                   {isMuted
                     ? <MicOffIcon size={14} color={colors.error} />
                     : <MicIcon size={14} color="#FAFAF9" />
+                  }
+                </MiniControlBtn>
+
+                {/* Passer l'appel audio en appel vidéo en un clic (comme
+                    WhatsApp), ou basculer avant/arrière si déjà en vidéo. */}
+                <MiniControlBtn
+                  onClick={(e) => { e.stopPropagation(); (isVideo ? switchCamera() : enableVideo()); }}
+                  label={isVideo ? 'Caméra' : 'Vidéo'}
+                >
+                  {isVideo
+                    ? <FlipCameraIcon size={14} color="#FAFAF9" />
+                    : <VideoIcon size={14} color={colors.accent} />
                   }
                 </MiniControlBtn>
 

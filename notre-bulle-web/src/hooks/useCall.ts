@@ -17,8 +17,9 @@ import {
   toggleSpeaker, muteMicrophone,
   startPlayingStream, stopPlayingStream, setOnRemoteStreamUpdate,
   setOnConnectionStateChange,
-  createOffer, switchCamera as switchCameraZego,
-} from '../lib/zego';
+  createOffer, switchCamera,
+  enableVideo as enableVideoWebRTC, setOnUpgradeToVideo,
+} from '../lib/webrtc';
 import type { Call, CallType } from '../types/database';
 import { notifyIncomingCall, notifyMissedCall, triggerPushNotification } from './useNotifications';
 import { startRingtone, stopRingtone, playCallEndSound } from '../lib/sounds';
@@ -101,10 +102,10 @@ function _scheduleIdle(delay: number): void {
 
 // Garde-fou module-level : les deux instances (ChatLayout / CallScreen) reçoivent les
 // mêmes événements Realtime. On garde un traceur pour la connexion WebRTC mais on ne
-// bloque pas : les opérations dans zego.ts sont idempotentes (joinRoom, startPublish,
-// createOffer avec flag offerSent), donc les deux instances peuvent appeler initZegoCall
+// bloque pas : les opérations dans webrtc.ts sont idempotentes (joinRoom, startPublish,
+// createOffer avec flag offerSent), donc les deux instances peuvent appeler initWebRTC
 // sans risque de double initialisation.
-let _zegoInitializedCallId: string | null = null;
+let _webrtcInitializedCallId: string | null = null;
 
 // ID de l'appel actif — partagé entre TOUTES les instances de useCall
 // (ChatLayout, CallScreen, CallOverlay). Variable module-level volontairement :
@@ -258,6 +259,7 @@ export interface UseCallReturn {
   toggleMute: () => Promise<void>;
   toggleSpeakerFn: () => Promise<void>;
   switchCamera: () => Promise<boolean>;
+  enableVideo: () => Promise<boolean>;
   resetCall: () => void;
 }
 
@@ -314,7 +316,7 @@ export function useCall(): UseCallReturn {
   }, [callState]);
 
   // ─── Init WebRTC (partagé entre caller et callee) ───
-  const initZegoCall = useCallback(async (callId: string, type: CallType, isOfferer: boolean) => {
+  const initWebRTC = useCallback(async (callId: string, type: CallType, isOfferer: boolean) => {
     // Le profil peut ne pas être chargé quand le URL-init de CallScreen s'exécute
     // (l'effet de chargement du profil est async). On le charge ici si besoin.
     if (!profileRef.current) {
@@ -332,7 +334,7 @@ export function useCall(): UseCallReturn {
     const me = profileRef.current;
     if (!me) return;
 
-    const alreadyInit = _zegoInitializedCallId === callId;
+    const alreadyInit = _webrtcInitializedCallId === callId;
 
     // Toujours installer les callbacks, quelle que soit la branche,
     // pour que la 2e instance (p. ex. CallScreen après ChatLayout) ait
@@ -375,7 +377,7 @@ export function useCall(): UseCallReturn {
 
     if (!alreadyInit) {
       // Première instance à initialiser WebRTC pour ce call
-      _zegoInitializedCallId = callId;
+      _webrtcInitializedCallId = callId;
 
       try {
         await joinRoom(callId, { userID: me.id, userName: me.name });
@@ -394,7 +396,7 @@ export function useCall(): UseCallReturn {
         _startSharedTimer();
       } catch (err) {
         console.error('Erreur WebRTC:', err);
-        _zegoInitializedCallId = null; // permet une tentative ultérieure
+        _webrtcInitializedCallId = null; // permet une tentative ultérieure
         _updateStore({ callState: 'ended' });
         _scheduleIdle(2000);
       }
@@ -452,7 +454,7 @@ export function useCall(): UseCallReturn {
     } else {
       // Le répondant initie WebRTC immédiatement en tant qu'offerer
       _updateStore({ callState: 'connecting' });
-      initZegoCall(callId, type as CallType, true);
+      initWebRTC(callId, type as CallType, true);
 
       // Marquer l'appel comme 'answered' pour que l'appelant (Realtime UPDATE)
       // initie WebRTC de son côté et que les deux se connectent. Ce chemin
@@ -468,10 +470,10 @@ export function useCall(): UseCallReturn {
 
     return () => {
       // React 19 StrictMode monte/démonte/monte l'effet 2×.
-      // Sans ce cleanup, le 2e montage voit _zegoInitializedCallId déjà positionné
+      // Sans ce cleanup, le 2e montage voit _webrtcInitializedCallId déjà positionné
       // et passe dans le bloc alreadyInit (qui ne fait pas la véritable init WebRTC).
-      if (_zegoInitializedCallId === callId) {
-        _zegoInitializedCallId = null;
+      if (_webrtcInitializedCallId === callId) {
+        _webrtcInitializedCallId = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -515,7 +517,7 @@ export function useCall(): UseCallReturn {
           // L'appelant détecte que le partenaire a répondu (answerer = pas d'offre SDP)
           if (updated.status === 'answered' && !updated.ended_at && updated.caller_id === me.id && _activeCallId === updated.id) {
             _updateStore({ callState: 'connecting' });
-            await initZegoCall(updated.id, updated.type, false);
+            await initWebRTC(updated.id, updated.type, false);
           }
 
           // Le partenaire a raccroché (status='answered' avec ended_at)
@@ -529,7 +531,7 @@ export function useCall(): UseCallReturn {
               if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
               _wasEverConnected = false;
               _activeCallId = null;
-              _zegoInitializedCallId = null;
+              _webrtcInitializedCallId = null;
               _updateStore({ callState: 'ended' });
               _scheduleIdle(2000);
             }
@@ -554,7 +556,7 @@ export function useCall(): UseCallReturn {
             if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
             _wasEverConnected = false;
             _activeCallId = null;
-            _zegoInitializedCallId = null;
+            _webrtcInitializedCallId = null;
             _updateStore({ callState: 'ended' });
             _scheduleIdle(2000);
           }
@@ -563,7 +565,7 @@ export function useCall(): UseCallReturn {
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [initZegoCall]);
+  }, [initWebRTC]);
 
   // ─── LANCER un appel ───
   const startCall = useCallback(async (type: CallType) => {
@@ -628,7 +630,7 @@ export function useCall(): UseCallReturn {
       .update({ status: 'answered', answered_at: new Date().toISOString() })
       .eq('id', callId);
 
-    // Naviguer → CallScreen se monte → URL-init lance initZegoCall
+    // Naviguer → CallScreen se monte → URL-init lance initWebRTC
     navigate(`/call?callId=${callId}&type=${incomingCall.type}&role=callee`);
   }, [incomingCall, navigate]);
 
@@ -722,7 +724,7 @@ export function useCall(): UseCallReturn {
     if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
     _wasEverConnected = false;
     _activeCallId = null;
-    _zegoInitializedCallId = null;
+    _webrtcInitializedCallId = null;
 
     // La navigation de sortie (/call → /chat) est gérée par CallScreen quand
     // callState passe à 'idle' — pas ici. Avant, navigate(-1) ici créait une
@@ -750,10 +752,27 @@ export function useCall(): UseCallReturn {
   // ─── Basculement caméra avant/arrière ───
   const switchCamera = useCallback(async (): Promise<boolean> => {
     try {
-      return await switchCameraZego();
+      return await switchCamera();
     } catch {
       return false;
     }
+  }, []);
+
+  // ─── Passer un appel audio en appel vidéo à la volée ───
+  // Active la caméra locale + renégocie, puis bascule l'UI local en mode vidéo.
+  // Le partenaire est basculé via le broadcast `upgrade-to-video` (ci-dessous).
+  const enableVideo = useCallback(async (): Promise<boolean> => {
+    const ok = await enableVideoWebRTC();
+    if (ok) {
+      _updateStore({ callType: 'video' });
+    }
+    return ok;
+  }, []);
+
+  // ─── Le partenaire a basculé l'appel en vidéo → suivre son UI ───
+  useEffect(() => {
+    setOnUpgradeToVideo(() => _updateStore({ callType: 'video' }));
+    return () => setOnUpgradeToVideo(null);
   }, []);
 
   const resetCall = useCallback(() => {
@@ -763,7 +782,7 @@ export function useCall(): UseCallReturn {
       callDuration: 0,
     });
     _activeCallId = null;
-    _zegoInitializedCallId = null;
+    _webrtcInitializedCallId = null;
     _wasEverConnected = false;
     if (_disconnectTimer) { clearTimeout(_disconnectTimer); _disconnectTimer = null; }
     _stopSharedTimer();
@@ -772,6 +791,6 @@ export function useCall(): UseCallReturn {
   return {
     callState, callType, callDuration, isSpeakerOn, isMuted, incomingCall,
     startCall, answerCall, rejectCall, endCall, toggleMute, toggleSpeakerFn,
-    switchCamera, resetCall,
+    switchCamera, enableVideo, resetCall,
   };
 }
