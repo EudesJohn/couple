@@ -55,6 +55,32 @@ export function useMessages(): UseMessagesReturn {
   const lastMsgTimestampRef = useRef<string | null>(null);
 
   // ==========================================
+  // Résolution locale des messages cités (reply)
+  // L'embed PostgREST `reply_to_message:messages!reply_to(...)` peut
+  // renvoyer null sur un re-fetch (relation mal déclarée). Comme on ne
+  // peut répondre qu'à un message déjà chargé, on le retrouve toujours
+  // dans `messages` : on comble reply_to_message côté client pour que la
+  // citation s'affiche, sans dépendre de la jointure en base.
+  // ==========================================
+  useEffect(() => {
+    const hasMissingReply = messages.some((m) => m.reply_to && !m.reply_to_message?.id);
+    if (!hasMissingReply) return;
+
+    const byId = new Map(messages.map((m) => [m.id, m]));
+    setMessages((prev) => {
+      let changed = false;
+      const next = prev.map((m) => {
+        if (!m.reply_to || m.reply_to_message?.id) return m;
+        const target = byId.get(m.reply_to);
+        if (!target) return m;
+        changed = true;
+        return { ...m, reply_to_message: { id: target.id, content: target.content, type: target.type } };
+      });
+      return changed ? next : prev;
+    });
+  }, [messages]);
+
+  // ==========================================
   // Récupération de l'ID du profil
   // ==========================================
   const getMyProfileId = useCallback(async (): Promise<string | null> => {
