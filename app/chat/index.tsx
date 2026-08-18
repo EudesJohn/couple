@@ -45,7 +45,7 @@ function DateSeparator({ date }: { date: string }) {
 
 export default function ChatScreen() {
   const flatListRef = useRef<FlatList>(null);
-  const { messages, sendText, sendVoice, sendImage, isLoading, error } = useMessages();
+  const { messages, sendText, sendVoice, sendImage, isLoading, myProfileId, error } = useMessages();
   const { setIsTyping, partnerPresence } = usePresence();
   const { pickImage, takePhoto, pickVideo } = useMediaPicker();
   const { bubbleSelf, bubbleOther, bg, backgroundImage, refresh: refreshTheme } = useTheme();
@@ -140,7 +140,7 @@ export default function ChatScreen() {
         return <DateSeparator date={item.data} />;
       }
       const msg = item.data as MessageWithDetails;
-      const isOwn = msg.sender_id === item.data.sender?.id;
+      const isOwn = msg.sender_id === myProfileId;
       const bubble = (
         <MessageBubble
           message={msg}
@@ -153,9 +153,7 @@ export default function ChatScreen() {
         <SwipeToReply onReply={() => handleReply(msg)}>
           {bubble}
         </SwipeToReply>
-      );
-    },
-    [bubbleSelf, bubbleOther, handleReply]
+      );    }, [bubbleSelf, bubbleOther, handleReply, myProfileId]
   );
 
   const keyExtractor = useCallback((item: any, index: number) => {

@@ -1,7 +1,10 @@
 // ============================================================
-// Couche d'abstraction Appels Audio/Vidéo
-// Web : WebRTC natif (RTCPeerConnection)
-// Mobile : ZegoCloud (zego-express-engine-reactnative)
+// Couche d'abstraction Appels Audio/Vidéo — WebRTC
+// Web : WebRTC navigateur (RTCPeerConnection)
+// Mobile : react-native-webrtc (RTCPeerConnection natif)
+//
+// Plus aucun ZegoCloud : le client de signalisation est Supabase
+// Realtime, les serveurs ICE sont STUN public + TURN Metered (optionnel).
 // ============================================================
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
@@ -25,9 +28,29 @@ interface CallUser {
 }
 
 let onRemoteStreamUpdate: ((streams: any[], added: boolean) => void) | null = null;
+let onConnectionStateChange: ((state: string) => void) | null = null;
+
+export function setOnConnectionStateChange(cb: ((state: string) => void) | null): void {
+  onConnectionStateChange = cb;
+}
+
+// Instance (native) du controller audio via react-native-incall-manager,
+// utilisée pour le basculement haut-parleur/écouteur et la gestion proximité.
+let incallManager: any = null;
+async function getIncallManager(): Promise<any> {
+  if (incallManager) return incallManager;
+  try {
+    const mod = await import('react-native-incall-manager');
+    incallManager = mod.default;
+    return incallManager;
+  } catch (err) {
+    console.warn('[InCall] incall-manager indisponible:', err);
+    return null;
+  }
+}
 
 // ==========================================================
-// WEB : WebRTC Implementation
+// WebRTC Implementation (commune web + mobile)
 // ==========================================================
 class WebRTCManager {
   private pc: RTCPeerConnection | null = null;
@@ -38,46 +61,106 @@ class WebRTCManager {
   private callId: string = '';
   private isMuted: boolean = false;
   private isSpeakerOn: boolean = false;
+  private offerSent: boolean = false;
 
-  private iceServers: RTCIceServer[] = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ];
+  // File d'attente ICE candidates : quand les candidats arrivent avant
+  // que setRemoteDescription soit appelé, on les stocke ici et on les
+  // rejoue après l'établissement de la session (évite InvalidStateError)
+  private pendingIceCandidates: RTCIceCandidateInit[] = [];
+
+  // Promise pour synchroniser handleOffer avec startPublish.
+  // Quand l'offre SDP arrive avant la fin de getUserMedia, handleOffer
+  // attend cette promesse pour que l'answer SDP inclue les pistes audio/vidéo.
+  private localStreamPromise: Promise<void> | null = null;
+  private resolveLocalStream: (() => void) | null = null;
+
+  // Callback appelé immédiatement quand le flux distant change
+  // (évite le polling 500ms dans CallScreen qui cause des sauts)
+  private onRemoteStreamReady: ((stream: MediaStream) => void) | null = null;
+
+  // Récupère les credentials TURN frais depuis l'API Metered.ca
+  private async fetchIceServers(): Promise<RTCIceServer[]> {
+    const servers: RTCIceServer[] = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ];
+
+    // Si une clé Metered est configurée, récupérer des credentials TURN
+    // frais via l'API REST (évite l'expiration des credentials statiques)
+    if (config.meteredApiKey) {
+      try {
+        const res = await fetch(
+          `https://notre-bulle-web.metered.live/api/v1/turn/credentials?apiKey=${config.meteredApiKey}`
+        );
+        if (res.ok) {
+          const dynamic = await res.json();
+          if (Array.isArray(dynamic) && dynamic.length > 0) {
+            // L'API Metered retourne un tableau d'ICE servers complets
+            return dynamic;
+          }
+        }
+      } catch (err) {
+        console.warn('[WebRTC] Échec récupération TURN Metered, fallback STUN:', err);
+      }
+    }
+
+    return servers;
+  }
+
+  setOnRemoteStreamReady(cb: ((stream: MediaStream) => void) | null): void {
+    this.onRemoteStreamReady = cb;
+  }
 
   async joinRoom(roomID: string, user: CallUser): Promise<void> {
+    // Idempotent : si déjà dans cette room, ne pas recréer le PC
+    if (this.callId === roomID && this.pc) return;
+
+    // Nettoyer une éventuelle session précédente
+    await this.leaveRoom();
+
     this.callId = roomID;
 
-    // Créer la connexion pair
-    this.pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    const servers = await this.fetchIceServers();
+    this.pc = new RTCPeerConnection({ iceServers: servers });
 
-    // Gérer les candidats ICE
+    // Forcer H264 (encodage matériel sur mobile) pour réduire les sauts d'image
+    this.preferH264Codec();
+
     this.pc.onicecandidate = (event) => {
       if (event.candidate) {
         this.sendSignal('ice-candidate', event.candidate);
       }
     };
 
-    // Gérer le flux distant
     this.pc.ontrack = (event) => {
       if (!this.remoteStream) {
         this.remoteStream = new MediaStream();
       }
-      event.streams[0].getTracks().forEach(track => {
+      event.streams[0].getTracks().forEach((track: MediaStreamTrack) => {
         this.remoteStream!.addTrack(track);
       });
 
       const streamId = event.streams[0]?.id || 'remote';
       this.remoteStreamId = streamId;
+
+      // Callback immédiat pour que CallScreen attache le flux sans délai
+      if (this.remoteStream && this.onRemoteStreamReady) {
+        this.onRemoteStreamReady(this.remoteStream);
+      }
+
       onRemoteStreamUpdate?.([{ streamID: streamId }], true);
     };
 
     this.pc.onconnectionstatechange = () => {
-      if (this.pc?.connectionState === 'disconnected' || this.pc?.connectionState === 'failed') {
+      const state = this.pc?.connectionState;
+      if (state === 'connected') {
+        onConnectionStateChange?.('connected');
+      } else if (state === 'disconnected' || state === 'failed') {
+        onConnectionStateChange?.(state!);
         onRemoteStreamUpdate?.([], false);
       }
     };
 
-    // Canal de signalisation WebRTC via Supabase Realtime
     this.signalChannel = supabase.channel(`webrtc:${roomID}`);
 
     this.signalChannel
@@ -88,48 +171,142 @@ class WebRTCManager {
     await this.signalChannel.subscribe();
   }
 
-  async startPublish(): Promise<void> {
+  async startPublish(video: boolean = false): Promise<void> {
+    if (this.localStream) return; // Déjà capturé
+
+    // Créer la promesse AVANT getUserMedia pour que handleOffer puisse
+    // l'attendre si l'offre SDP arrive avant la fin de la capture.
+    this.localStreamPromise = new Promise<void>(resolve => {
+      this.resolveLocalStream = resolve;
+    });
+
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: true,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+        video: video ? {
+          width: { ideal: 480, max: 640 },
+          height: { ideal: 288, max: 480 },
+          frameRate: { ideal: 20, max: 24 },
+        } : false,
       });
 
-      // Ajouter les tracks locales au peer connection
       this.localStream.getTracks().forEach(track => {
         this.pc?.addTrack(track, this.localStream!);
       });
-
-      // Créer et envoyer l'offre SDP
-      const offer = await this.pc!.createOffer();
-      await this.pc!.setLocalDescription(offer);
-      await this.sendSignal('sdp-offer', { sdp: offer.sdp, type: offer.type });
     } catch (err) {
+      if (video) {
+        // Fallback audio-only si la caméra n'est pas disponible
+        console.warn('[WebRTC] Caméra indisponible, fallback audio only');
+        try {
+          this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          this.localStream.getTracks().forEach(track => {
+            this.pc?.addTrack(track, this.localStream!);
+          });
+          return; // Succès audio-only
+        } catch (audioErr) {
+          console.error('[WebRTC] Micro indisponible aussi:', audioErr);
+        }
+      }
       console.error('[WebRTC] Erreur startPublish:', err);
       throw err;
+    } finally {
+      this.resolveLocalStream?.();
+      this.localStreamPromise = null;
+      this.resolveLocalStream = null;
     }
+  }
+
+  async createOffer(): Promise<void> {
+    if (this.offerSent) return;
+    this.offerSent = true;
+    const offer = await this.pc!.createOffer();
+    await this.pc!.setLocalDescription(offer);
+    await this.limitVideoBitrate();
+    await this.sendSignal('sdp-offer', { sdp: offer.sdp, type: offer.type });
   }
 
   async handleOffer(payload: { sdp: string; type: string }): Promise<void> {
     if (!this.pc) return;
-    await this.pc.setRemoteDescription(new RTCSessionDescription(payload));
 
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
-    await this.sendSignal('sdp-answer', { sdp: answer.sdp, type: answer.type });
+    // Attendre que le flux local soit disponible (getUserMedia + addTrack)
+    // pour que l'answer SDP inclue les pistes audio/vidéo.
+    // Résout le race condition : l'offre arrive avant la fin de getUserMedia.
+    if (this.localStreamPromise) {
+      await this.localStreamPromise;
+    }
+
+    // Polite peer : si on a déjà créé une offre locale, rollback pour accepter
+    // l'offre distante (évite la collision SDP quand les deux publient)
+    if (this.pc.signalingState === 'have-local-offer') {
+      try {
+        await this.pc.setLocalDescription({ type: 'rollback' });
+      } catch {
+        console.warn('[WebRTC] rollback non supporté, fermeture du PC');
+        this.pc.close();
+        this.pc = null;
+        onRemoteStreamUpdate?.([], false);
+        onConnectionStateChange?.('failed');
+        return;
+      }
+    }
+
+    try {
+      await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
+
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
+      await this.limitVideoBitrate();
+      await this.sendSignal('sdp-answer', { sdp: answer.sdp, type: answer.type });
+      // Rejouer les ICE candidates arrivés avant le setRemoteDescription
+      await this.flushPendingIceCandidates();
+    } catch (err) {
+      console.error('[WebRTC] Erreur handleOffer:', err);
+    }
   }
 
   async handleAnswer(payload: { sdp: string; type: string }): Promise<void> {
     if (!this.pc) return;
-    await this.pc.setRemoteDescription(new RTCSessionDescription(payload));
+    // Ignorer si déjà en état stable (connexion déjà établie)
+    if (this.pc.signalingState === 'stable') return;
+    try {
+      await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
+      // Rejouer les ICE candidates arrivés avant le setRemoteDescription
+      await this.flushPendingIceCandidates();
+    } catch (err) {
+      console.error('[WebRTC] Erreur handleAnswer:', err);
+    }
   }
 
   async handleIceCandidate(payload: any): Promise<void> {
     if (!this.pc || !payload.candidate) return;
+
+    // Si la description distante n'est pas encore définie, bufferiser
+    // le candidat pour le rejouer plus tard (évite InvalidStateError)
+    if (!this.pc.remoteDescription) {
+      this.pendingIceCandidates.push(payload);
+      return;
+    }
+
     try {
       await this.pc.addIceCandidate(new RTCIceCandidate(payload));
     } catch (err) {
       console.warn('[WebRTC] Erreur ajout ICE candidate:', err);
+    }
+  }
+
+  // Rejouer les ICE candidates mis en attente après setRemoteDescription
+  private async flushPendingIceCandidates(): Promise<void> {
+    while (this.pendingIceCandidates.length > 0) {
+      const candidate = this.pendingIceCandidates.shift()!;
+      if (!this.pc) break;
+      try {
+        await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.warn('[WebRTC] Erreur ICE candidate différé:', err);
+      }
     }
   }
 
@@ -140,6 +317,47 @@ class WebRTCManager {
       event,
       payload,
     });
+  }
+
+  // Limite le débit vidéo et configure l'adaptation réseau pour éviter
+  // les sauts d'image sur connexion mobile.
+  private async limitVideoBitrate(): Promise<void> {
+    if (!this.pc) return;
+    const senders = this.pc.getSenders();
+    for (const sender of senders) {
+      if (sender.track?.kind === 'video') {
+        try {
+          const params = sender.getParameters();
+          if (!params.encodings) params.encodings = [{}];
+          // 300 kbps max — suffisant pour 360p fluide sans saturer le réseau mobile
+          params.encodings[0].maxBitrate = 300_000;
+          // Prioriser le maintien du framerate : baisse la qualité avant de réduire les fps
+          (params.encodings[0] as any).degradationPreference = 'maintain-framerate';
+          await sender.setParameters(params).catch(() => {});
+        } catch {
+          // Silencieux si non supporté par le navigateur
+        }
+      }
+    }
+  }
+
+  // Forcer H264 (hardware encode) — bien plus fluide sur mobile que VP8/VP9
+  private preferH264Codec(): void {
+    if (!this.pc || !this.pc.getTransceivers) return;
+    try {
+      const caps = RTCRtpSender.getCapabilities?.('video');
+      if (!caps?.codecs) return;
+      const h264 = caps.codecs.filter((c: any) => c.mimeType.toLowerCase().includes('h264'));
+      const other = caps.codecs.filter((c: any) => !c.mimeType.toLowerCase().includes('h264'));
+      const preferred = [...h264, ...other];
+      for (const tr of this.pc.getTransceivers()) {
+        if (tr.receiver?.track?.kind === 'video' && tr.setCodecPreferences) {
+          tr.setCodecPreferences(preferred);
+        }
+      }
+    } catch {
+      // Silencieux si setCodecPreferences non supporté
+    }
   }
 
   async leaveRoom(roomID?: string): Promise<void> {
@@ -158,22 +376,24 @@ class WebRTCManager {
     this.remoteStream = null;
     this.remoteStreamId = null;
     this.callId = '';
+    this.offerSent = false;
+    this.pendingIceCandidates = [];
   }
 
   async stopPublish(): Promise<void> {
     if (this.localStream) {
-      this.localStream.getTracks().forEach(t => t.stop());
+      this.localStream.getTracks().forEach(t => (t as any).stop());
       this.localStream = null;
     }
   }
 
   async startPlayingStream(streamID: string): Promise<void> {
-    // Web: le flux est déjà reçu via ontrack
+    // Le flux est déjà reçu via ontrack
   }
 
   async stopPlayingStream(streamID: string): Promise<void> {
     if (this.remoteStream) {
-      this.remoteStream.getTracks().forEach(t => t.stop());
+      this.remoteStream.getTracks().forEach(t => (t as any).stop());
       this.remoteStream = null;
     }
     this.remoteStreamId = null;
@@ -181,15 +401,118 @@ class WebRTCManager {
 
   async toggleSpeaker(enabled: boolean): Promise<void> {
     this.isSpeakerOn = enabled;
-    // Web: pas de contrôle de haut-parleur direct
+    if (isWeb) return; // Web: pas de contrôle de haut-parleur direct
+    try {
+      const mgr = await getIncallManager();
+      if (mgr) {
+        // Démarrer InCallManager si pas encore actif (requis avant setSpeakerphoneOn)
+        try { mgr.start({ media: 'audio' }); } catch { /* déjà démarré */ }
+        // setForceSpeakerphoneOn(1) = forcé ON, (-1) = forcé OFF
+        mgr.setForceSpeakerphoneOn(enabled ? 1 : -1);
+      }
+    } catch (err) {
+      console.warn('[InCall] speaker switch:', err);
+    }
   }
 
   async muteMicrophone(muted: boolean): Promise<void> {
     this.isMuted = muted;
     if (this.localStream) {
-      this.localStream.getAudioTracks().forEach(track => {
+      this.localStream.getAudioTracks().forEach((track: any) => {
         track.enabled = !muted;
       });
+    }
+  }
+
+  async switchCamera(): Promise<boolean> {
+    if (!this.localStream) return false;
+    const videoTrack = this.localStream.getVideoTracks()[0] as any;
+    if (!videoTrack) return false;
+
+    // Sur mobile (react-native-webrtc), switchCamera() est natif et instantané.
+    if (!isWeb) {
+      try {
+        if (typeof videoTrack.switchCamera === 'function') {
+          await videoTrack.switchCamera();
+          return true;
+        }
+      } catch (err) {
+        console.warn('[WebRTC] switchCamera natif:', err);
+        return false;
+      }
+    }
+
+    // Web : énumérer les caméras et capturer la suivante
+    try {
+      const allDevices = await navigator.mediaDevices.enumerateDevices();
+      const cams = allDevices.filter(d => d.kind === 'videoinput');
+
+      const curId = videoTrack.getSettings()?.deviceId;
+      let nextCam: MediaDeviceInfo | undefined;
+
+      if (curId && cams.length >= 2) {
+        nextCam = cams.find(d => d.deviceId !== curId);
+      } else if (cams.length >= 2) {
+        nextCam = cams[cams.length - 1];
+      }
+
+      const tryCapture = async (device: MediaDeviceInfo | undefined): Promise<MediaStream> => {
+        if (device) {
+          return navigator.mediaDevices.getUserMedia({
+            video: {
+              deviceId: { exact: device.deviceId },
+              width: { ideal: 480, max: 640 },
+              height: { ideal: 288, max: 480 },
+              frameRate: { ideal: 20, max: 24 },
+            },
+            audio: false,
+          });
+        }
+        const facing = videoTrack.getSettings()?.facingMode || 'user';
+        const nf = facing === 'user' ? 'environment' : 'user';
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { exact: nf }, width: { ideal: 480, max: 640 }, height: { ideal: 288, max: 480 }, frameRate: { ideal: 20, max: 24 } },
+            audio: false,
+          });
+        } catch {
+          return await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: nf, width: { ideal: 480, max: 640 }, height: { ideal: 288, max: 480 }, frameRate: { ideal: 20, max: 24 } },
+            audio: false,
+          });
+        }
+      };
+
+      let newStream: MediaStream;
+      try {
+        newStream = await tryCapture(nextCam);
+      } catch (_firstErr) {
+        this.localStream.removeTrack(videoTrack);
+        videoTrack.stop();
+        newStream = await tryCapture(nextCam);
+      }
+
+      const newTrack = newStream.getVideoTracks()[0];
+      if (!newTrack) return false;
+
+      const sender = this.pc?.getSenders().find(s => s.track?.kind === 'video');
+      if (sender) {
+        await sender.replaceTrack(newTrack);
+      } else {
+        this.pc?.addTrack(newTrack, this.localStream);
+      }
+
+      this.localStream.addTrack(newTrack);
+
+      if (videoTrack.readyState !== 'ended') {
+        this.localStream.removeTrack(videoTrack);
+        videoTrack.stop();
+      }
+
+      return true;
+    } catch (err) {
+      console.warn('[WebRTC] Échec basculement caméra:', err);
+      return false;
     }
   }
 
@@ -197,38 +520,6 @@ class WebRTCManager {
   getRemoteStream(): MediaStream | null { return this.remoteStream; }
   getRemoteStreamId(): string | null { return this.remoteStreamId; }
   isAvailable(): boolean { return true; }
-}
-
-// ==========================================================
-// MOBILE : ZegoCloud (natif)
-// ==========================================================
-let ZegoModule: any = null;
-let engine: any = null;
-let previewView: any = undefined;
-let remoteView: any = undefined;
-
-async function getZegoModule() {
-  if (ZegoModule) return ZegoModule;
-  try {
-    ZegoModule = await import('zego-express-engine-reactnative');
-    return ZegoModule;
-  } catch { return null; }
-}
-
-async function getEngine() {
-  if (engine) return engine;
-  const Zego = await getZegoModule();
-  if (!Zego) throw new Error('[Zego] Module non disponible');
-  engine = await Zego.default.createEngineWithProfile({
-    appID: config.zego.appID,
-    appSign: config.zego.appSign,
-    scenario: Zego.ZegoScenario.StandardVideoCall,
-  });
-  engine.on('roomStreamUpdate', (roomID: string, updateType: number, streamList: any[]) => {
-    const added = updateType === 0;
-    onRemoteStreamUpdate?.(streamList, added);
-  });
-  return engine;
 }
 
 // ==========================================================
@@ -242,102 +533,181 @@ function getWebRTC(): WebRTCManager {
 }
 
 // ==========================================================
-// API publique (même interface que l'ancien Zego)
+// API publique
 // ==========================================================
 
 export async function isZegoAvailable(): Promise<boolean> {
-  if (isWeb) return true; // WebRTC toujours disponible
-  try {
-    const mod = await getZegoModule();
-    return mod !== null;
-  } catch { return false; }
+  return true; // WebRTC toujours disponible
 }
 
 export function setPreviewView(view: any | undefined): void {
-  if (isWeb) return;
-  previewView = view;
+  // No-op : le rendu natif passe par RTCView (voir app/call/index.tsx)
 }
 
 export function setRemoteView(view: any | undefined): void {
-  if (isWeb) return;
-  remoteView = view;
+  // No-op : le rendu natif passe par RTCView (voir app/call/index.tsx)
 }
 
 export function setOnRemoteStreamUpdate(cb: ((streams: any[], added: boolean) => void) | null): void {
   onRemoteStreamUpdate = cb;
 }
 
+export function setOnRemoteStreamReady(cb: ((stream: MediaStream) => void) | null): void {
+  getWebRTC().setOnRemoteStreamReady(cb);
+}
+
 export async function joinRoom(roomID: string, user: CallUser): Promise<void> {
-  if (isWeb) return getWebRTC().joinRoom(roomID, user);
-  const zg = await getEngine();
-  const result = await zg.loginRoom(roomID, { userID: user.userID, userName: user.userName }, { maxMemberCount: 2, isUserStatusNotify: true, token: '' });
-  if (result.errorCode !== 0) throw new Error(`Échec connexion salon: code ${result.errorCode}`);
+  return getWebRTC().joinRoom(roomID, user);
 }
 
 export async function leaveRoom(roomID?: string): Promise<void> {
-  if (isWeb) return getWebRTC().leaveRoom(roomID);
-  const zg = await getEngine();
-  await zg.logoutRoom(roomID);
+  return getWebRTC().leaveRoom(roomID);
 }
 
-export async function startPublish(): Promise<void> {
-  if (isWeb) return getWebRTC().startPublish();
-  const zg = await getEngine();
-  if (previewView) await zg.startPreview(previewView, undefined);
-  await zg.startPublishingStream('stream_main', undefined, undefined);
+/** @param video – demander la caméra (true pour appel vidéo, false/skip pour audio) */
+export async function startPublish(video?: boolean): Promise<void> {
+  return getWebRTC().startPublish(video ?? false);
+}
+
+export async function createOffer(): Promise<void> {
+  return getWebRTC().createOffer();
 }
 
 export async function stopPublish(): Promise<void> {
-  if (isWeb) return getWebRTC().stopPublish();
-  const zg = await getEngine();
-  await zg.stopPublishingStream(undefined);
-  await zg.stopPreview(undefined);
+  return getWebRTC().stopPublish();
 }
 
 export async function startPlayingStream(streamID: string): Promise<void> {
-  if (isWeb) return getWebRTC().startPlayingStream(streamID);
-  const zg = await getEngine();
-  await zg.startPlayingStream(streamID, remoteView, undefined);
+  return getWebRTC().startPlayingStream(streamID);
 }
 
 export async function stopPlayingStream(streamID: string): Promise<void> {
-  if (isWeb) return getWebRTC().stopPlayingStream(streamID);
-  const zg = await getEngine();
-  await zg.stopPlayingStream(streamID);
+  return getWebRTC().stopPlayingStream(streamID);
 }
 
 export async function toggleSpeaker(enabled: boolean): Promise<void> {
-  if (isWeb) return getWebRTC().toggleSpeaker(enabled);
-  const zg = await getEngine();
-  await zg.muteSpeaker(!enabled);
+  return getWebRTC().toggleSpeaker(enabled);
 }
 
 export async function muteMicrophone(muted: boolean): Promise<void> {
-  if (isWeb) return getWebRTC().muteMicrophone(muted);
-  const zg = await getEngine();
-  await zg.muteMicrophone(muted);
+  return getWebRTC().muteMicrophone(muted);
+}
+
+export async function switchCamera(): Promise<boolean> {
+  return getWebRTC().switchCamera();
 }
 
 export async function destroy(): Promise<void> {
-  if (isWeb) {
-    await getWebRTC().leaveRoom();
-    webRTCInstance = null;
-    return;
-  }
-  if (engine) {
-    onRemoteStreamUpdate = null;
-    const Zego = ZegoModule;
-    await Zego?.default?.destroyEngine?.();
-    engine = null;
-    previewView = undefined;
-    remoteView = undefined;
-    ZegoModule = null;
+  await getWebRTC().leaveRoom();
+  webRTCInstance = null;
+  onRemoteStreamUpdate = null;
+  onConnectionStateChange = null;
+}
+
+// ==========================================================
+// Rendu natif — RTCView (react-native-webrtc)
+// Utilisé par app/call/index.tsx pour afficher les flux sur mobile.
+// ==========================================================
+let RTCViewComponent: React.ComponentType<any> | null = null;
+let RTCViewFailed = false;
+
+export function getRTCView(): React.ComponentType<any> | null {
+  if (RTCViewComponent) return RTCViewComponent;
+  if (RTCViewFailed || isWeb) return null; // Web: utilise <video>
+  try {
+    const mod = require('react-native-webrtc');
+    RTCViewComponent = mod.RTCView;
+    return RTCViewComponent;
+  } catch (err) {
+    console.warn('[WebRTC] RTCView indisponible:', err);
+    RTCViewFailed = true;
+    return null;
   }
 }
 
-// Exports spécifiques Web (pour la partie CallScreen)
+export function streamToUrl(stream: MediaStream | null): string | undefined {
+  if (!stream || isWeb) return undefined;
+  try {
+    return (stream as any).toURL?.();
+  } catch {
+    return undefined;
+  }
+}
+
+// ==========================================================
+// Picture-in-Picture (PiP) — fenêtre flottante OS (web uniquement)
+// ==========================================================
+let _pipVideoElement: HTMLVideoElement | null = null;
+
+export function setPipVideoElement(el: HTMLVideoElement | null): void {
+  _pipVideoElement = el;
+}
+
+let _pipWantsAudio = false;
+const _pipListeners = new Set<() => void>();
+
+export function setPipWantsAudio(v: boolean): void {
+  if (_pipWantsAudio === v) return;
+  _pipWantsAudio = v;
+  _pipListeners.forEach(fn => fn());
+}
+export function isPipWantsAudio(): boolean {
+  return _pipWantsAudio;
+}
+export function subscribePipWantsAudio(fn: () => void): () => void {
+  _pipListeners.add(fn);
+  return () => { _pipListeners.delete(fn); };
+}
+
+export function requestPictureInPicture(): boolean {
+  if (isWeb && typeof document !== 'undefined') {
+    const video = _pipVideoElement;
+    if (!video) return false;
+    if (document.pictureInPictureElement) {
+      setPipWantsAudio(true);
+      return true;
+    }
+    video.muted = false;
+    setPipWantsAudio(true);
+    try {
+      video.requestPictureInPicture().catch((err: any) => {
+        console.warn('[PiP] Erreur entrée PiP:', err);
+        setPipWantsAudio(false);
+        video.muted = true;
+      });
+      return true;
+    } catch (err) {
+      console.warn('[PiP] Erreur entrée PiP:', err);
+      setPipWantsAudio(false);
+      video.muted = true;
+      return false;
+    }
+  }
+  return false;
+}
+
+export function exitPictureInPicture(): void {
+  setPipWantsAudio(false);
+  if (isWeb && typeof document !== 'undefined') {
+    if (document.pictureInPictureElement) {
+      document.exitPictureInPicture().catch(() => {});
+    }
+    if (_pipVideoElement) {
+      _pipVideoElement.muted = true;
+    }
+  }
+}
+
+export function isPiPSupported(): boolean {
+  if (!isWeb || typeof document === 'undefined') return false;
+  return 'pictureInPictureEnabled' in document && document.pictureInPictureEnabled;
+}
+
+// ==========================================================
+// Accès aux flux WebRTC (pour CallScreen / CallOverlay)
+// ==========================================================
 export function getWebRTCStreams(): { local: MediaStream | null; remote: MediaStream | null; remoteStreamId: string | null } {
-  if (!isWeb || !webRTCInstance) return { local: null, remote: null, remoteStreamId: null };
+  if (!webRTCInstance) return { local: null, remote: null, remoteStreamId: null };
   return {
     local: webRTCInstance.getLocalStream(),
     remote: webRTCInstance.getRemoteStream(),
