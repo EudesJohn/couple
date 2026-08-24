@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../constants/config';
+import { getOwnProfileId } from './profile';
 // import type { Database } from '../types/database'; // à générer via supabase gen types
 
 export const supabase = createClient(
@@ -21,14 +22,15 @@ export const supabase = createClient(
 
 // Helper pour récupérer le profil courant
 export async function getCurrentProfile() {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
+  // Utiliser l'identité stockée (femme/homme) pour résoudre le bon profil
+  const ownId = await getOwnProfileId();
+  if (!ownId) return null;
 
   const { data } = await supabase
     .from('profiles')
     .select('*')
-    .eq('supabase_uid', user.id)
-    .single();
+    .eq('id', ownId)
+    .maybeSingle();
 
   return data;
 }

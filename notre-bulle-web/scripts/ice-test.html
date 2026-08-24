@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>ICE Test</title></head>
+<body>
+<pre id="out"></pre>
+<script>
+const out = document.getElementById('out');
+function log(msg) {
+  out.textContent += msg + '\n';
+  console.log(msg);
+}
+
+(async () => {
+  log('=== Test ICE (TURN Metered) ===');
+  try {
+    // 1. Récupérer les credentials TURN
+    const res = await fetch('https://notre-bulle-web.metered.live/api/v1/turn/credentials?apiKey=__API_KEY__');
+    log('Fetch credentials → HTTP ' + res.status);
+    const servers = await res.json();
+    log('Serveurs reçus: ' + JSON.stringify(servers).slice(0, 400));
+
+    // 2. Créer un RTCPeerConnection avec ces serveurs
+    const pc = new RTCPeerConnection({ iceServers: servers });
+    log('RTCPeerConnection créé');
+
+    const candidates = [];
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) {
+        log('=== ICE gathering terminé ===');
+        const types = candidates.map(c => c.type);
+        const counts = {};
+        types.forEach(t => counts[t] = (counts[t] || 0) + 1);
+        log('Candidats par type: ' + JSON.stringify(counts));
+        log(counts['relay'] ? '✅ Candidat TURN (relay) TROUVÉ — le relais fonctionne !' : '❌ AUCUN candidat relay — TURN ne fonctionne pas');
+        // Détail du candidat relay
+        const relay = candidates.find(c => c.type === 'relay');
+        if (relay) log('Relay: ' + relay.candidate);
+        else log('Tous les candidats: ' + candidates.map(c => c.type + ':' + (c.candidate||'').slice(0,60)).join('\n'));
+        pc.close();
+      } else {
+        const type = e.candidate.type || e.candidate.candidate.split(' ')[2];
+        candidates.push({ type, candidate: e.candidate.candidate });
+        if (type === 'relay') log('🏁 relay candidate reçu: ' + e.candidate.candidate.slice(0, 80));
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => log('ICE state: ' + pc.iceConnectionState);
+    pc.onconnectionstatechange = () => log('Connection state: ' + pc.connectionState);
+
+    // Forcer la génération de candidats (data channel sans getUserMedia)
+    pc.createDataChannel('test');
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    log('Offer créée, gathering ICE en cours…');
+  } catch (err) {
+    log('❌ ERREUR: ' + (err.message || err));
+  }
+})();
+</script>
+</body>
+</html>

@@ -98,3 +98,10 @@ export function resetAuth(): void {
   localStorage.removeItem(STORE_KEYS.PIN_HASH_MAN);
   localStorage.removeItem(STORE_KEYS.IS_SETUP_DONE);
 }
+
+/** Réinitialise uniquement l'identité (femme/homme) pour revenir
+ *  au choix de profil. Le PIN et les autres données restent. */
+export function resetIdentity(): void {
+  localStorage.removeItem(STORE_KEYS.IDENTITY);
+  localStorage.removeItem(STORE_KEYS.LEGACY_IDENTITY);
+}

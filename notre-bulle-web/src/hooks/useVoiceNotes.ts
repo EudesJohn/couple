@@ -65,7 +65,13 @@ export function useVoiceNotes(): UseVoiceNotesReturn {
       setRecordingState('preparing');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaChunksRef.current = [];
-      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      // Opus à ~32 kbps : voix nette (téléphone) tout en divisant la taille
+      // par ~4 par rapport au débit par défaut du navigateur (~128 kbps).
+      // Note : la voix est mono, 16 kHz suffit largement pour un message vocal.
+      const recorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus',
+        audioBitsPerSecond: 32_000,
+      });
       mediaRecorderRef.current = recorder;
 
       recorder.ondataavailable = (e) => {

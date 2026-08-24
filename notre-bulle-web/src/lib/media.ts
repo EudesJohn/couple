@@ -43,8 +43,11 @@ function mimeToExt(mime: string): string {
 
 // ==========================================
 // COMPRESSION D'IMAGE (Canvas API)
+// - 1080 px max (suffisant pour un écran de téléphone)
+// - qualité JPEG 0.72 : équilibre taille/poids bien visible sans
+//   dégradation perceptible pour des photos partagées
 // ==========================================
-export async function compressImage(uri: string, maxWidth = 1200): Promise<string> {
+export async function compressImage(uri: string, maxWidth = 1080, quality = 0.72): Promise<string> {
   try {
     const img = new Image();
 
@@ -65,7 +68,7 @@ export async function compressImage(uri: string, maxWidth = 1200): Promise<strin
             else resolve(uri);
           },
           'image/jpeg',
-          0.8
+          quality
         );
       };
       img.onerror = () => resolve(uri);

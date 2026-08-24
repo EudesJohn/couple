@@ -11,11 +11,10 @@ export const config = {
   partnerProfileId: Constants.expoConfig?.extra?.partnerProfileId ?? '',
   // Code PIN (hashé en production)
   appPin: Constants.expoConfig?.extra?.appPin ?? '1234',
-  // Clé ZegoCloud
-  zego: {
-    appID: Constants.expoConfig?.extra?.zegoAppID ?? 0,
-    appSign: Constants.expoConfig?.extra?.zegoAppSign ?? '',
-  },
+  // Serveurs ICE pour WebRTC — utilise l'API Metered.ca
+  // Inscris-toi sur https://metered.ca/turn (50 Go/mois gratuit) puis mets
+  // ta clé dans meteredApiKey. En fallback, les STUN Google sont utilisés.
+  meteredApiKey: Constants.expoConfig?.extra?.meteredApiKey ?? '',
 } as const;
 
 export const STORAGE_BUCKETS = {

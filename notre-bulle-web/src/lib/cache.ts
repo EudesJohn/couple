@@ -126,6 +126,22 @@ export async function addCachedMessage(msg: MessageWithDetails): Promise<void> {
   });
 }
 
+/** Ajoute (upsert) plusieurs messages au cache en une seule transaction */
+export async function upsertCachedMessages(msgs: MessageWithDetails[]): Promise<void> {
+  if (!msgs.length) return;
+  const db = await getDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('messages', 'readwrite');
+    const store = tx.objectStore('messages');
+    for (const msg of msgs) {
+      store.put(msg);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+
 /** Remplace un message existant dans le cache (UPDATE Realtime) */
 export async function updateCachedMessage(msg: MessageWithDetails): Promise<void> {
   const db = await getDb();

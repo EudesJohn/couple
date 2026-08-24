@@ -6,12 +6,16 @@
 import { Platform } from 'react-native';
 import { digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 
+// --- Identité (femme /homme) ---
+export type UserIdentity = 'woman' | 'man';
+
 // --- Clés SecureStore ---
 const STORE_KEYS = {
   PIN_HASH: 'notre-bulle.pin-hash',
   BIOMETRIC_FINGERPRINT: 'notre-bulle.bio-fingerprint',
   BIOMETRIC_FACE: 'notre-bulle.bio-face',
   IS_SETUP_DONE: 'notre-bulle.setup-done',
+  IDENTITY: 'notre-bulle.identity.v2',
 } as const;
 
 const isWeb = Platform.OS === 'web';
@@ -169,4 +173,19 @@ export async function authenticateWithBiometrics(): Promise<boolean> {
 // --- Vérifier si le code PIN a déjà été défini ---
 export async function isPinSet(): Promise<boolean> {
   return (await getStoredPinHash()) !== null;
+}
+
+// --- Identité (femme /homme) ---
+export async function saveIdentity(role: UserIdentity): Promise<void> {
+  await secureSet(STORE_KEYS.IDENTITY, role);
+}
+
+export async function getIdentity(): Promise<UserIdentity | null> {
+  const val = await secureGet(STORE_KEYS.IDENTITY);
+  if (val === 'woman' || val === 'man') return val;
+  return null;
+}
+
+export async function isFirstIdentitySet(): Promise<boolean> {
+  return (await getIdentity()) !== null;
 }

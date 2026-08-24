@@ -2,7 +2,7 @@
 // Paramètres premium — Pseudo, PIN, thème, fond d'écran
 // Design Burgundy & Gold, Framer Motion
 // ============================================================
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { colors, spacing, borderRadius } from '../constants/theme';
@@ -11,7 +11,7 @@ import { saveLastUnlock, saveSessionEpoch } from '../lib/auth';
 import { getTheme, saveTheme, saveBackgroundImage, removeBackgroundImage, getBackgroundImage, type ChatTheme } from '../lib/settings';
 import { compressImage, downloadMedia } from '../lib/media';
 import { clearProfileCache } from '../lib/cache';
-import { getOwnProfileId } from '../lib/profile';
+import { getOwnProfileId, getActualPartnerProfileId } from '../lib/profile';
 import { requestNotificationPermission } from '../hooks/useNotifications';
 import { useAuth } from '../hooks/useAuth';
 import {
@@ -135,18 +135,25 @@ export default function SettingsScreen() {
   const [confirmPin, setConfirmPin] = useState('');
   const [pinStep, setPinStep] = useState<'old' | 'new' | 'confirm'>('old');
   const [pinError, setPinError] = useState('');
+  // Ancien code VÉRIFIÉ côté serveur — conservé pendant tout le flux de
+  // changement. L'état oldPin est vidé visuellement après l'étape 1
+  // (sinon les 4 points restaient pleins), mais change_couple_pin exige
+  // l'ancien code réel : sans ce ref, il recevait une chaîne VIDE →
+  // « Ancien code incorrect » systématique à la confirmation.
+  const verifiedOldPinRef = useRef('');
 
   // Get profile ID (pas de session Supabase, on utilise la config)
   // Utilise getOwnProfileId() pour cibler le vrai profil (photo, pseudo)
-  const getUserId = useCallback(async (): Promise<string | null> => {
-    return getOwnProfileId() || null;
+  // Chacun nomme SON PARTENAIRE (modèle WhatsApp)
+  const getPartnerUserId = useCallback(async (): Promise<string | null> => {
+    return getActualPartnerProfileId() || null;
   }, []);
 
   // Load profile
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const userId = await getUserId();
+      const userId = await getPartnerUserId();
       if (!userId) return;
       const { data: profile } = await supabase
         .from('profiles')
@@ -164,7 +171,7 @@ export default function SettingsScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [getUserId]);
+  }, [getPartnerUserId]);
 
   // Charger l'image de l'avatar via downloadMedia (contourne le bucket privé)
   useEffect(() => {
@@ -290,7 +297,7 @@ export default function SettingsScreen() {
     if (savingPseudo) return;
     setSavingPseudo(true);
     try {
-      const userId = await getUserId();
+      const userId = await getPartnerUserId();
       if (!userId) {
         showAlert('error', 'Connexion', 'Tu dois être connecté pour changer ton pseudo');
         setSavingPseudo(false);
@@ -307,7 +314,7 @@ export default function SettingsScreen() {
     } catch (err: any) {
       showAlert('error', 'Erreur', err?.message || 'Impossible de modifier le pseudo');
     } finally { setSavingPseudo(false); }
-  }, [newDisplayName, getUserId, showToast, showAlert, savingPseudo]);
+  }, [newDisplayName, getPartnerUserId, showToast, showAlert, savingPseudo]);
 
   // PIN handler
   const handlePinKey = useCallback(async (key: string) => {
@@ -330,6 +337,8 @@ export default function SettingsScreen() {
           const { data } = await supabase.rpc('verify_couple_pin', { p_profile_id: profileId, p_pin: newVal });
           const ok = Array.isArray(data) ? Boolean(data[0]?.ok) : Boolean(data);
           if (ok) {
+            // Mémoriser l'ancien code VÉRIFIÉ pour l'étape de confirmation
+            verifiedOldPinRef.current = newVal;
             setOldPin('');
             setPinStep('new');
           } else {
@@ -358,7 +367,7 @@ export default function SettingsScreen() {
           try {
             const { data } = await supabase.rpc('change_couple_pin', {
               p_profile_id: profileId,
-              p_old_pin: oldPin,
+              p_old_pin: verifiedOldPinRef.current,
               p_new_pin: newVal,
             });
             const row = Array.isArray(data) ? data[0] : data;
@@ -366,6 +375,7 @@ export default function SettingsScreen() {
               await saveSessionEpoch(Number(row.session_epoch ?? 0));
               await saveLastUnlock();
               showToast('Code PIN modifié');
+              verifiedOldPinRef.current = '';
               setShowPinChange(false);
               setOldPin('');
               setNewPin('');
@@ -422,7 +432,7 @@ export default function SettingsScreen() {
     if (!photoPreview || uploading) return;
     setUploading(true);
     try {
-      const userId = await getUserId();
+      const userId = await getPartnerUserId();
       if (!userId) {
         showAlert('error', 'Connexion', 'Tu dois être connecté à Supabase');
         setUploading(false);
@@ -442,7 +452,7 @@ export default function SettingsScreen() {
     } catch (err: any) {
       showAlert('error', 'Erreur', err?.message || 'Impossible de changer la photo');
     } finally { setUploading(false); }
-  }, [photoPreview, getUserId, uploadImageToStorage, showToast, showAlert, uploading]);
+  }, [photoPreview, getPartnerUserId, uploadImageToStorage, showToast, showAlert, uploading]);
 
   const handleCancelPhoto = useCallback(() => { setPhotoPreview(null); }, []);
 
@@ -458,7 +468,7 @@ export default function SettingsScreen() {
       const uri = URL.createObjectURL(file);
       setUploading(true);
       try {
-        const userId = await getUserId();
+        const userId = await getPartnerUserId();
         if (!userId) {
           showAlert('error', 'Connexion', 'Tu dois être connecté');
           setUploading(false);
@@ -482,7 +492,7 @@ export default function SettingsScreen() {
       } finally { setUploading(false); }
     };
     input.click();
-  }, [getUserId, uploadImageToStorage, showToast, showAlert, uploading]);
+  }, [getPartnerUserId, uploadImageToStorage, showToast, showAlert, uploading]);
 
   const handleRemoveBackground = useCallback(async () => {
     await removeBackgroundImage();
@@ -727,7 +737,18 @@ export default function SettingsScreen() {
 
           <motion.button
             whileTap={{ scale: 0.98 }}
-            onClick={() => setShowPinChange(!showPinChange)}
+            onClick={() => {
+              if (showPinChange) {
+                // Fermeture / annulation → remettre le flux à zéro
+                verifiedOldPinRef.current = '';
+                setOldPin('');
+                setNewPin('');
+                setConfirmPin('');
+                setPinStep('old');
+                setPinError('');
+              }
+              setShowPinChange(!showPinChange);
+            }}
             style={{
               background: 'none', border: 'none', cursor: 'pointer',
               fontFamily: 'inherit', padding: 0,

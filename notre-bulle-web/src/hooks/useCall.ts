@@ -11,14 +11,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { getCurrentProfile } from '../lib/supabase';
-import { getMyProfileId, getPartnerProfileId, getActualPartnerProfileId } from '../lib/profile';
+import { getActualPartnerProfileId, getMyProfileId } from '../lib/profile';
 import {
   joinRoom, leaveRoom, startPublish, stopPublish,
   toggleSpeaker, muteMicrophone,
   startPlayingStream, stopPlayingStream, setOnRemoteStreamUpdate,
   setOnConnectionStateChange,
-  createOffer, switchCamera,
-  enableVideo as enableVideoWebRTC, setOnUpgradeToVideo,
+  createOffer, requestOffer, switchCamera,
+  enableVideo as enableVideoWebRTC, disableVideo as disableVideoWebRTC, setOnUpgradeToVideo, setOnDowngradeToAudio,
 } from '../lib/webrtc';
 import type { Call, CallType } from '../types/database';
 import { notifyIncomingCall, notifyMissedCall, triggerPushNotification } from './useNotifications';
@@ -72,11 +72,17 @@ function _useStore(): CallStore {
 // =============================================================
 let _callTimer: ReturnType<typeof setInterval> | null = null;
 
+let _callStartTime: number = 0;
+
 function _startSharedTimer(): void {
   if (_callTimer) return; // déjà en cours
+  _callStartTime = Date.now();
   _updateStore({ callDuration: 0 });
   _callTimer = setInterval(() => {
-    _updateStore({ callDuration: _store.callDuration + 1 });
+    // Basé sur Date.now() : résiste aux pauses du timer,
+    // aux onglets en arrière-plan, et aux micro-économies CPU.
+    const elapsed = Math.floor((Date.now() - _callStartTime) / 1000);
+    _updateStore({ callDuration: elapsed });
   }, 1000);
 }
 
@@ -260,6 +266,7 @@ export interface UseCallReturn {
   toggleSpeakerFn: () => Promise<void>;
   switchCamera: () => Promise<boolean>;
   enableVideo: () => Promise<boolean>;
+  disableVideo: () => Promise<boolean>;
   resetCall: () => void;
 }
 
@@ -388,6 +395,11 @@ export function useCall(): UseCallReturn {
           // Petit délai pour laisser l'autre rejoindre le canal de signalisation
           await new Promise(r => setTimeout(r, 600));
           await createOffer();
+        } else {
+          // Non-offerer : on a rejoint le canal — demander l'offre au partenaire.
+          // Couvre le race condition réseau où l'offre initiale est partie avant
+          // notre abonnement au canal (le broadcast serait perdu sinon).
+          await requestOffer().catch(() => {});
         }
 
         _updateStore({ callState: 'connected' });
@@ -697,13 +709,9 @@ export function useCall(): UseCallReturn {
           .single();
 
         if (conv) {
-          // sender_id : mapping INVERSÉ des messages (getMyProfileId /
-          // getPartnerProfileId) pour que isOwn s'affiche correctement des
-          // deux côtés — sortant chez l'appelant, entrant chez l'appelé.
-          // Le caller_id en base utilise le mapping CORRECT (getOwnProfileId),
-          // d'où l'inversion ici pour rester cohérent avec le reste du chat.
-          const isMeCaller = callRecord.caller_id === me.id;
-          const senderId = isMeCaller ? getMyProfileId() : getPartnerProfileId();
+          // sender_id : mapping HISTORIQUE (inversé) pour rester cohérent
+          // avec les anciens messages et que isOwn fonctionne des deux côtés.
+          const senderId = getMyProfileId();
 
           await supabase.from('messages').insert({
             conversation_id: conv.id,
@@ -769,10 +777,38 @@ export function useCall(): UseCallReturn {
     return ok;
   }, []);
 
-  // ─── Le partenaire a basculé l'appel en vidéo → suivre son UI ───
+  // ─── Revenir en audio pur (désactiver la caméra) ───
+  const disableVideo = useCallback(async (): Promise<boolean> => {
+    const ok = await disableVideoWebRTC();
+    if (ok) {
+      _updateStore({ callType: 'audio' });
+    }
+    return ok;
+  }, []);
+
+  // ─── Le partenaire a basculé l'appel en vidéo → activer notre caméra
+  //     et suivre son UI. Sans ça, quand l'autre passe en vidéo, la caméra
+  //     du récepteur ne s'allume pas. On active aussi l'envoi de notre vidéo.
   useEffect(() => {
-    setOnUpgradeToVideo(() => _updateStore({ callType: 'video' }));
+    setOnUpgradeToVideo(async () => {
+      _updateStore({ callType: 'video' });
+      // Activer notre caméra + renégocier pour envoyer notre vidéo au partenaire
+      const ok = await enableVideoWebRTC();
+      if (ok) {
+        _updateStore({ callType: 'video' });
+      }
+    });
     return () => setOnUpgradeToVideo(null);
+  }, []);
+
+  // ─── Le partenaire a basculé vidéo → audio : désactiver notre caméra
+  //     automatiquement pour revenir en audio des deux côtés.
+  useEffect(() => {
+    setOnDowngradeToAudio(() => {
+      disableVideoWebRTC().catch(() => {});
+      _updateStore({ callType: 'audio' });
+    });
+    return () => setOnDowngradeToAudio(null);
   }, []);
 
   const resetCall = useCallback(() => {
@@ -791,6 +827,6 @@ export function useCall(): UseCallReturn {
   return {
     callState, callType, callDuration, isSpeakerOn, isMuted, incomingCall,
     startCall, answerCall, rejectCall, endCall, toggleMute, toggleSpeakerFn,
-    switchCamera, enableVideo, resetCall,
+    switchCamera, enableVideo, disableVideo, resetCall,
   };
 }

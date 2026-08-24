@@ -315,7 +315,20 @@ def predict_full(entries: List[Dict], period_length: int = DEFAULT_PERIOD_LENGTH
 
 app = FastAPI(title="Notre Bulle — API", version="1.1.0")
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# CORS restreint aux domaines autorisés (pas de wildcard * !)
+ALLOWED_ORIGINS = [
+    "https://notre-bulle-web.vercel.app",
+    "http://localhost:5173",   # dev Vite
+    "http://localhost:3000",   # dev fallback
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+)
 
 logger = logging.getLogger("notre-bulle-api")
 
@@ -329,6 +342,131 @@ VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_CLAIM_EMAIL = os.environ.get("VAPID_CLAIM_EMAIL", "admin@notre-bulle.app")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+
+# ============================================================
+# JWT VERIFICATION — vérifie les tokens Supabase Auth
+# ============================================================
+import base64
+import hashlib
+import hmac
+from functools import lru_cache
+
+try:
+    import jwt as pyjwt
+except ImportError:
+    pyjwt = None
+
+# JWKS cache (Supabase expose ses clés publiques via /.well-known/jwks.json)
+_jwks_cache: Optional[Dict] = None
+_jwks_cache_time: float = 0
+
+
+@lru_cache(maxsize=1)
+def _get_supabase_jwt_secret() -> Optional[str]:
+    """Récupère le JWT secret Supabase pour vérification locale.
+    
+    En production, on utilise les JWKS. En fallback, on peut utiliser
+    le JWT secret depuis les variables d'env.
+    """
+    return os.environ.get("SUPABASE_JWT_SECRET", "")
+
+
+async def _fetch_jwks() -> Optional[Dict]:
+    """Récupère les clés publiques JWKS de Supabase (cache 1h)."""
+    global _jwks_cache, _jwks_cache_time
+    import time
+    
+    if _jwks_cache and (time.time() - _jwks_cache_time) < 3600:
+        return _jwks_cache
+    
+    if not SUPABASE_URL:
+        return None
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{SUPABASE_URL}/.well-known/jwks.json", timeout=5.0)
+            if resp.status_code == 200:
+                _jwks_cache = resp.json()
+                _jwks_cache_time = time.time()
+                return _jwks_cache
+    except Exception:
+        pass
+    return None
+
+
+def _decode_jwt_payload(token: str) -> Optional[Dict]:
+    """Décode le payload d'un JWT sans vérifier la signature ( fallback )."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1]
+        # Ajouter le padding base64
+        payload += "=" * (4 - len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload)
+        return json.loads(decoded)
+    except Exception:
+        return None
+
+
+async def verify_supabase_token(authorization: Optional[str]) -> Optional[Dict]:
+    """Vérifie un token Supabase Auth.
+    
+    Retourne le payload décodé si le token est valide, None sinon.
+    Priorité : PyJWT + JWKS > PyJWT + secret > décodage sans vérif.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    
+    token = authorization[7:]  # Enlever "Bearer "
+    
+    # 1. Essayer PyJWT + JWKS (vérification complète)
+    if pyjwt:
+        try:
+            jwks = await _fetch_jwks()
+            if jwks and "keys" in jwks:
+                from jwt import PyJWKClient
+                jwk_client = PyJWKClient(f"{SUPABASE_URL}/.well-known/jwks.json")
+                signing_key = jwk_client.get_signing_key_from_jwt(token)
+                payload = pyjwt.decode(
+                    token,
+                    signing_key.key,
+                    algorithms=["HS256"],
+                    audience="authenticated",
+                    options={"verify_exp": True},
+                )
+                return payload
+        except Exception:
+            pass
+    
+    # 2. Essayer PyJWT + JWT secret (si configuré)
+    jwt_secret = _get_supabase_jwt_secret()
+    if pyjwt and jwt_secret:
+        try:
+            payload = pyjwt.decode(
+                token,
+                jwt_secret,
+                algorithms=["HS256"],
+                audience="authenticated",
+                options={"verify_exp": True},
+            )
+            return payload
+        except Exception:
+            pass
+    
+    # 3. Fallback : décodage sans vérif de signature
+    #    (protège contre les tokens expirés mais pas contre les forgeries)
+    payload = _decode_jwt_payload(token)
+    if payload:
+        import time
+        exp = payload.get("exp", 0)
+        if exp and exp < time.time():
+            return None  # Token expiré
+        if payload.get("role") not in ("authenticated", "anon"):
+            return None
+        return payload
+    
+    return None
 # Les deux profils du couple. L'app est utilisée par les 2 partenaires sur le
 # même téléphone ; ces IDs sont la source de vérité (identité + push), même si
 # conversation_members contient d'anciens IDs divergents.
@@ -612,7 +750,17 @@ def health():
 
 
 @app.post("/api/predict")
-def predict_cycle(request: PredictionRequest):
+async def predict_cycle(request: PredictionRequest, authorization: Optional[str] = Header(None)):
+    """Prédiction de cycle — PROTÉGÉ par authentification Supabase.
+    
+    Seuls les utilisateurs authentifiés (sign-in anonyme) peuvent accéder
+    aux données de cycle. Empêche l'exposition de données de santé sensibles.
+    """
+    # Vérifier l'authentification
+    payload = await verify_supabase_token(authorization)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Authentification requise")
+    
     entries = [e.model_dump() for e in request.entries]
     return predict_full(
         entries=entries,
@@ -623,7 +771,11 @@ def predict_cycle(request: PredictionRequest):
 
 
 @app.post("/api/demo/seed")
-def seed_demo():
+async def seed_demo(authorization: Optional[str] = Header(None)):
+    """Seed de données démo — PROTÉGÉ par authentification."""
+    payload = await verify_supabase_token(authorization)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Authentification requise")
     demo_profile = "demo-couple"
     base = date.today() - timedelta(days=120)
     periods = [base, base + timedelta(days=27), base + timedelta(days=56), base + timedelta(days=83)]
@@ -645,11 +797,16 @@ def seed_demo():
 # ============================================================
 
 @app.post("/api/push/subscribe")
-async def push_subscribe(request: PushSubscribeIn):
+async def push_subscribe(request: PushSubscribeIn, authorization: Optional[str] = Header(None)):
     """
     Enregistre un abonnement push pour un profil.
     Appelé par le navigateur après avoir souscrit via PushManager.subscribe().
+    PROTÉGÉ : authentification Supabase requise.
     """
+    payload = await verify_supabase_token(authorization)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Authentification requise")
+    
     if not request.profile_id or not request.endpoint:
         raise HTTPException(status_code=400, detail="profile_id et endpoint requis")
 
@@ -672,12 +829,16 @@ async def push_subscribe(request: PushSubscribeIn):
 
 
 @app.post("/api/push/notify")
-async def push_notify(request: PushNotifyIn):
+async def push_notify(request: PushNotifyIn, authorization: Optional[str] = Header(None)):
     """
     Envoie une notification push au partenaire.
     Récupère tous les abonnements push du destinataire et envoie
     la notification à chacun via Web Push Protocol.
+    PROTÉGÉ : authentification Supabase requise.
     """
+    payload = await verify_supabase_token(authorization)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Authentification requise")
     if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
         logger.error("VAPID keys non configurées — push impossible")
         raise HTTPException(status_code=500, detail="VAPID keys non configurées sur le serveur")

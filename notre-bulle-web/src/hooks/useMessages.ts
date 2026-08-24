@@ -10,8 +10,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { uploadMedia, compressImage } from '../lib/media';
-import { cacheMessages, getCachedMessages, addCachedMessage, updateCachedMessage, removeCachedMessage } from '../lib/cache';
-import { getMyProfileId as getProfileId, getOwnProfileId, getActualPartnerProfileId } from '../lib/profile';
+import { cacheMessages, getCachedMessages, addCachedMessage, updateCachedMessage, removeCachedMessage, upsertCachedMessages } from '../lib/cache';
+import { getMyProfileId, getOwnProfileId, getActualPartnerProfileId } from '../lib/profile';
 import { notifyNewMessage, triggerPushNotification } from './useNotifications';
 import type { MessageWithDetails, Message, MessageType, Attachment, MessageStatus } from '../types/database';
 
@@ -77,16 +77,16 @@ export function useMessages(): UseMessagesReturn {
         return { ...m, reply_to_message: { id: target.id, content: target.content, type: target.type } };
       });
       return changed ? next : prev;
-    });
-  }, [messages]);
+    });  }, [messages]);
 
   // ==========================================
   // Récupération de l'ID du profil
   // ==========================================
-  const getMyProfileId = useCallback(async (): Promise<string | null> => {
+  const resolveMyProfileId = useCallback(async (): Promise<string | null> => {
     if (myProfileIdRef.current) return myProfileIdRef.current;
 
-    const id = getProfileId();
+    // Mapping HISTORIQUE (inversé) pour la rétrocompatibilité des sender_id
+    const id = getMyProfileId();
     if (id) {
       myProfileIdRef.current = id;
       setMyProfileId(id);
@@ -103,8 +103,8 @@ export function useMessages(): UseMessagesReturn {
     let mounted = true;
 
     const init = async () => {
-      // 1. ID du profil
-      const profileId = await getMyProfileId();
+      // 1. ID du profil (mapping inversé historique)
+      const profileId = await resolveMyProfileId();
 
       // 2. Récupérer la conversation
       const { data: convData, error: convError } = await supabase
@@ -127,19 +127,36 @@ export function useMessages(): UseMessagesReturn {
 
       const loadedConvId = convData.id;
 
-      // 3a. Cache local d'abord — affichage instantané
+      // 3a. Cache local d'abord → affichage instantané
+      //     On lit l'historique complet en IndexedDB et on l'affiche tel quel.
+      //     Aucune requête Supabase tant que ce cache est disponible.
+      let cached: MessageWithDetails[] = [];
       try {
-        const cached = await getCachedMessages(loadedConvId);
+        cached = await getCachedMessages(loadedConvId);
         if (mounted && cached.length > 0) {
+          // Trier par created_at croissant (l'IndexedDB ne garantit pas l'ordre)
+          cached.sort((a, b) => a.created_at.localeCompare(b.created_at));
           setMessages(cached);
+          // Base du polling : le dernier message local, même si le delta réseau est vide
+          lastMsgTimestampRef.current = cached[cached.length - 1].created_at;
+          setIsLoading(false);
+          isLoadingRef.current = false;
         }
       } catch {
         // Le cache peut échouer silencieusement (IndexedDB désactivé, etc.)
       }
 
       // 3b. Synchronisation Supabase en arrière-plan
+      //     - Cache déjà rempli → fetch DELTA uniquement (messages >= dernier connu),
+      //       sans `.limit(100)` : on récupère TOUT ce qui manque depuis le dernier
+      //       message local. La base n'est plus sollicitée pour tout l'historique.
+      //     - Pas de cache (première visite) → fetch complet initial (100) + remplissage.
       try {
-        const { data, error: msgError } = await supabase
+        const after = cached.length > 0
+          ? cached[cached.length - 1].created_at
+          : null;
+
+        let query = supabase
           .from('messages')
           .select(`
             *,
@@ -149,23 +166,55 @@ export function useMessages(): UseMessagesReturn {
             reply_to_message:messages!reply_to(id, content, type)
           `)
           .eq('conversation_id', loadedConvId)
-          .order('created_at', { ascending: true })
-          .limit(100);
+          .order('created_at', { ascending: true });
+
+        if (after) {
+          // Delta : tout ce qui est plus récent ou égal au dernier message local.
+          // `.gte` + merge par id : évite de perdre des messages à la même seconde.
+          query = query.gte('created_at', after);
+        } else {
+          query = query.limit(100);
+        }
+
+        const { data, error: msgError } = await query;
 
         if (mounted) {
           if (data) {
             const fetched = data as unknown as MessageWithDetails[];
-            setMessages(fetched);
-            // Mettre à jour le timestamp du dernier message pour le polling
-            if (fetched.length > 0) {
-              lastMsgTimestampRef.current = fetched[fetched.length - 1].created_at;
+
+            if (after) {
+              // Delta : fusionner (upsert par id) avec l'état + le cache, garder le tri
+              if (fetched.length > 0) {
+                const now = fetched[fetched.length - 1].created_at;
+                if (now > (lastMsgTimestampRef.current || '')) {
+                  lastMsgTimestampRef.current = now;
+                }
+                setMessages((prev) => {
+                  const map = new Map(prev.map((m) => [m.id, m]));
+                  for (const msg of fetched) {
+                    map.set(msg.id, msg);
+                  }
+                  return Array.from(map.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+                });
+                // Accumuler le delta dans le cache (updater au lieu d'écraser la tranche)
+                upsertCachedMessages(fetched).catch(() => {});
+              }
+            } else {
+              // Cache vide : être complet
+              setMessages(fetched);
+              if (fetched.length > 0) {
+                lastMsgTimestampRef.current = fetched[fetched.length - 1].created_at;
+              }
+              // Initialiser le cache avec la tranche la plus récente
+              cacheMessages(loadedConvId, fetched).catch(() => {});
             }
-            // Mettre à jour le cache avec les données fraîches
-            cacheMessages(loadedConvId, fetched).catch(() => {});
           }
           if (msgError) {
             console.warn('Erreur chargement messages:', msgError.message);
-            setError(msgError.message);
+            // Ne bloquer l'écran sur une erreur que s'il n'existe pas de cache local
+            if (cached.length === 0) {
+              setError(msgError.message);
+            }
           }
           setIsLoading(false);
           isLoadingRef.current = false;
@@ -187,7 +236,7 @@ export function useMessages(): UseMessagesReturn {
     return () => {
       mounted = false;
     };
-  }, [getMyProfileId]);
+  }, [resolveMyProfileId]);
 
   // ==========================================
   // EFFET 2 — Souscription Realtime (noms UNIQUES)
@@ -282,6 +331,8 @@ export function useMessages(): UseMessagesReturn {
             addCachedMessage(fullMsg).catch(() => {});
 
             // Notification si message du partenaire (sauf journaux d'appel)
+            // isOwn : compare avec le mapping historique (inversé) pour
+            // rester cohérent avec les anciens sender_id en base.
             const isOwn = fullMsg.sender_id === myProfileIdRef.current;
             if (!isOwn && myProfileIdRef.current && fullMsg.type !== 'call') {
               try {
@@ -291,7 +342,19 @@ export function useMessages(): UseMessagesReturn {
                   status: 'delivered',
                 }, { onConflict: 'message_id,profile_id' });
 
-                const senderName = fullMsg.sender?.display_name || 'Partenaire';
+                // Le sender_id utilise le mapping inversé historique, donc le
+                // JOIN sender:profiles retourne le MAUVAIS display_name.
+                // On résout le vrai nom du partenaire directement.
+                const notifPartnerId = getActualPartnerProfileId();
+                let senderName = 'Partenaire';
+                if (notifPartnerId) {
+                  const { data: np } = await supabase
+                    .from('profiles')
+                    .select('display_name')
+                    .eq('id', notifPartnerId)
+                    .single();
+                  if (np?.display_name) senderName = np.display_name;
+                }
                 const content = fullMsg.type === 'text'
                   ? fullMsg.content
                   : fullMsg.type === 'image' ? 'Photo'
@@ -524,7 +587,7 @@ export function useMessages(): UseMessagesReturn {
     attachmentData?: { storage_path: string; mime_type: string; file_size?: number; duration_ms?: number; width?: number; height?: number },
     replyToId?: string | null,
   ): Promise<boolean> => {
-    const profileId = myProfileId || getProfileId();
+    const profileId = myProfileId || getMyProfileId();
     if (!convId || !profileId) return false;
 
     // Insérer dans Supabase
@@ -780,7 +843,7 @@ export function useMessages(): UseMessagesReturn {
   // SUPPRESSION D'UN MESSAGE
   // ==========================================
   const deleteMessage = useCallback(async (messageId: string): Promise<boolean> => {
-    const profileId = myProfileId || getProfileId();
+    const profileId = myProfileId || getMyProfileId();
     if (!convId || !profileId) return false;
 
     const { error } = await supabase
@@ -803,7 +866,7 @@ export function useMessages(): UseMessagesReturn {
   // MODIFICATION D'UN MESSAGE (texte uniquement)
   // ==========================================
   const editMessage = useCallback(async (messageId: string, newContent: string): Promise<boolean> => {
-    const profileId = myProfileId || getProfileId();
+    const profileId = myProfileId || getMyProfileId();
     if (!convId || !profileId) return false;
     if (!newContent.trim()) return false;
 

@@ -20,7 +20,7 @@ import Animated, {
   Easing,
 } from 'react-native-reanimated';
 import { useRef, useCallback, useState, useEffect } from 'react';
-import { isZegoAvailable, getWebRTCStreams } from '../../src/lib/zego';
+import { isZegoAvailable, getWebRTCStreams, setOnRemoteStreamReady, getRTCView, streamToUrl } from '../../src/lib/zego';
 import { colors, typography, borderRadius } from '../../src/constants/theme';
 import { useCall } from '../../src/hooks/useCall';
 import {
@@ -149,26 +149,77 @@ function formatDuration(seconds: number): string {
 }
 
 // ==========================================
+// RENDU DU FLUX — RTCView (mobile) / <video> (web)
+// ==========================================
+function RemoteVideo({
+  stream,
+  mirrored,
+  style,
+}: {
+  stream: MediaStream | null;
+  mirrored?: boolean;
+  style?: any;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (isWeb && videoRef.current) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  if (!stream) return null;
+
+  // Mobile natif → RTCView
+  const RTCViewCmp = getRTCView();
+  if (RTCViewCmp) {
+    const url = streamToUrl(stream);
+    if (!url) return null;
+    return (
+      <RTCViewCmp
+        streamURL={url}
+        objectFit="cover"
+        zOrder={0}
+        mirror={mirrored ? 1 : 0}
+        style={[StyleSheet.absoluteFill, { borderRadius: 0 }]}
+      />
+    );
+  }
+
+  // Web → élément <video>
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      muted={mirrored}
+      style={{ width: '100%', height: '100%', objectFit: 'cover', transform: mirrored ? 'scaleX(-1)' : undefined }}
+    />
+  );
+}
+
+
+// ==========================================
 // ÉCRAN PRINCIPAL
 // ==========================================
 export default function CallScreen() {
   const { role, type: routeType } = useLocalSearchParams<{ callId: string; type: 'audio' | 'video'; role: 'caller' | 'callee' }>();
   const insets = useSafeAreaInsets();
 
-  // Web: refs pour éléments vidéo
-  const localVideoRef = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
-
-  // Mobile: refs pour vues Zego
-  const localViewRef = useRef<View>(null);
-  const remoteViewRef = useRef<View>(null);
-
   const {
     callState, callType, callDuration, isMuted, isSpeakerOn,
-    toggleMute, toggleSpeakerFn, endCall,
+    toggleMute, toggleSpeakerFn, endCall, switchCamera,
   } = useCall();
 
   const [webRTCStreams, setWebRTCStreams] = useState<{ local: MediaStream | null; remote: MediaStream | null }>({ local: null, remote: null });
+
+  // Web + Mobile: callback immédiat quand le flux distant arrive
+  useEffect(() => {
+    setOnRemoteStreamReady((stream) => {
+      setWebRTCStreams((prev) => (prev.remote === stream ? prev : { ...prev, remote: stream }));
+    });
+    return () => setOnRemoteStreamReady(null);
+  }, []);
 
   // Web: attacher les flux vidéo aux éléments <video>
   useEffect(() => {
@@ -181,16 +232,6 @@ export default function CallScreen() {
     }, 500);
     return () => clearInterval(interval);
   }, []);
-
-  useEffect(() => {
-    if (!isWeb || !localVideoRef.current) return;
-    localVideoRef.current.srcObject = webRTCStreams.local;
-  }, [webRTCStreams.local]);
-
-  useEffect(() => {
-    if (!isWeb || !remoteVideoRef.current) return;
-    remoteVideoRef.current.srcObject = webRTCStreams.remote;
-  }, [webRTCStreams.remote]);
 
   const isVideo = callType === 'video' || routeType === 'video';
   const isConnected = callState === 'connected';
@@ -214,8 +255,8 @@ export default function CallScreen() {
       <View style={styles.videoBackground}>
         {isVideo && (
           <View style={styles.remoteVideo}>
-            {isConnected && webRTCStreams.remote && isWeb ? (
-              <video ref={remoteVideoRef} autoPlay playsInline style={StyleSheet.absoluteFill as any} />
+            {isConnected && webRTCStreams.remote ? (
+              <RemoteVideo stream={webRTCStreams.remote} />
             ) : (
               <View style={styles.remotePlaceholder}>
                 <HeartFilledIcon size={80} color={colors.accent} />
@@ -228,8 +269,8 @@ export default function CallScreen() {
         {/* PiP local */}
         {isVideo && (
           <View style={styles.localVideo}>
-            {isConnected && webRTCStreams.local && isWeb ? (
-              <video ref={localVideoRef} autoPlay playsInline muted style={{ flex: 1, borderRadius: 16 }} />
+            {isConnected && webRTCStreams.local ? (
+              <RemoteVideo stream={webRTCStreams.local} mirrored />
             ) : (
               <View style={styles.localPlaceholder}>
                 <UserIcon size={28} color="rgba(255,255,255,0.4)" />
@@ -289,8 +330,8 @@ export default function CallScreen() {
           </View>
 
           {isVideo && (
-            <ControlBtn onPress={() => {}} active label="Vidéo">
-              <VideoIcon size={20} color={colors.accent} />
+            <ControlBtn onPress={() => switchCamera()} label="Caméra">
+              <VideoIcon size={20} color="#FAFAF9" />
             </ControlBtn>
           )}
         </View>

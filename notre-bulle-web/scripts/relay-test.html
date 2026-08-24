@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Test relais TURN (relay-only)</title></head>
+<body>
+<h3>Test : le média traverse-t-il le relais TURN ?</h3>
+<pre id="log"></pre>
+<script>
+const log = (msg) => {
+  const el = document.getElementById('log');
+  el.textContent += msg + '\n';
+  console.log(msg);
+};
+
+const API_KEY = '__API_KEY__';
+
+async function fetchIceServers() {
+  const servers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+  ];
+  try {
+    const res = await fetch(`https://notre-bulle-web.metered.live/api/v1/turn/credentials?apiKey=${API_KEY}`);
+    if (res.ok) {
+      const dynamic = await res.json();
+      if (Array.isArray(dynamic) && dynamic.length > 0) return dynamic;
+    }
+  } catch (e) {
+    log('Erreur fetch TURN: ' + e.message);
+  }
+  return servers;
+}
+
+// Filtre : ne garder que les candidats relay dans le SDP
+function filterSdp(sdp) {
+  return sdp.split('\r\n').filter(line => {
+    if (line.startsWith('a=candidate:')) {
+      const parts = line.split(' ');
+      const typIdx = parts.indexOf('typ');
+      const type = typIdx >= 0 ? parts[typIdx + 1] : '';
+      return type === 'relay';
+    }
+    return true;
+  }).join('\r\n');
+}
+
+// Ne garder que les candidats relay à l'envoi
+function relayOnlyCb(origOnIce) {
+  return (e) => {
+    if (e.candidate) {
+      const parts = e.candidate.candidate.split(' ');
+      if (parts[2] !== 'relay') return;
+    }
+    if (origOnIce) origOnIce(e);
+  };
+}
+
+async function main() {
+  const servers = await fetchIceServers();
+  log('ICE servers: ' + JSON.stringify(servers.map(s => Array.isArray(s.urls) ? s.urls.join(',') : s.urls)));
+
+  const t0 = Date.now();
+  const pc1 = new RTCPeerConnection({ iceServers: servers });
+  const pc2 = new RTCPeerConnection({ iceServers: servers });
+
+  // DataChannel pour prouver le flux de données
+  const dc = pc1.createDataChannel('test');
+  let gotData = false;
+  dc.onopen = () => log('DataChannel OPEN');
+  dc.onmessage = (e) => { gotData = true; log('DataChannel message reçu: ' + e.data); };
+  pc2.ondatachannel = (e) => {
+    const ch = e.channel;
+    ch.onopen = () => { log('DataChannel OPEN (côté 2)'); ch.send('hello-relay'); };
+    ch.onmessage = (e) => { gotData = true; log('DataChannel message reçu (côté 2): ' + e.data); };
+  };
+
+  // Écouter les candidats générés — ne transmettre que les relay
+  // Récupère le TYPE d'un candidat (host/srflx/relay) — c'est après 'typ' dans
+  // la string SDP candidate: "candidate:fond 1 udp 2122260223 10.0.0.1 5000 typ host ..."
+  function candType(c) {
+    const parts = c.split(' ');
+    const i = parts.indexOf('typ');
+    return i >= 0 ? parts[i + 1] : '?';
+  }
+
+  // Log TOUS les candidats bruts + état gathering, ne transmettre QUE les relay
+  pc1.onicecandidate = (e) => {
+    if (e.candidate) {
+      const t = candType(e.candidate.candidate);
+      const parts = e.candidate.candidate.split(' ');
+      // addr = parts[4], port = parts[5] dans le format candidat
+      log(`[pc1] candidat généré: type=${t} ${parts[4]}:${parts[5]}`);
+      if (t === 'relay') {
+        pc2.addIceCandidate(e.candidate).catch(err => log('[pc2] addIce err: ' + err.message));
+      }
+    } else {
+      log(`[pc1] gathering done (state=${pc1.iceGatheringState})`);
+    }
+  };
+  pc2.onicecandidate = (e) => {
+    if (e.candidate) {
+      const t = candType(e.candidate.candidate);
+      const parts = e.candidate.candidate.split(' ');
+      log(`[pc2] candidat généré: type=${t} ${parts[4]}:${parts[5]}`);
+      if (t === 'relay') {
+        pc1.addIceCandidate(e.candidate).catch(err => log('[pc1] addIce err: ' + err.message));
+      }
+    } else {
+      log(`[pc2] gathering done (state=${pc2.iceGatheringState})`);
+    }
+  };
+  pc1.addEventListener('icegatheringstatechange', () => log(`[pc1] iceGatheringState=${pc1.iceGatheringState}`));
+  pc2.addEventListener('icegatheringstatechange', () => log(`[pc2] iceGatheringState=${pc2.iceGatheringState}`));
+  // Capturer les erreurs console pour debug
+  window.addEventListener('error', (e) => log('ERREUR PAGE: ' + e.message));
+
+  pc1.oniceconnectionstatechange = () => log(`[pc1] iceConnectionState=${pc1.iceConnectionState} (${((Date.now()-t0)/1000).toFixed(1)}s)`);
+  pc2.oniceconnectionstatechange = () => log(`[pc2] iceConnectionState=${pc2.iceConnectionState} (${((Date.now()-t0)/1000).toFixed(1)}s)`);
+  pc1.onconnectionstatechange = () => log(`[pc1] connectionState=${pc1.connectionState}`);
+  pc2.onconnectionstatechange = () => log(`[pc2] connectionState=${pc2.connectionState}`);
+
+  // Offre : SDP COMPLET pour setLocalDescription (Chrome doit démarrer le
+  // gathering), mais on n'ENVOIE au pair que la version sans host/srflx
+  // (simule deux réseaux sans connectivité directe → seul le relay peut passer)
+  const offer = await pc1.createOffer();
+  await pc1.setLocalDescription(offer);
+  log(`[pc1] offre envoyée (${((Date.now()-t0)/1000).toFixed(1)}s)`);
+
+  const offerToSend = filterSdp(offer.sdp);
+  await pc2.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: offerToSend }));
+  const answer = await pc2.createAnswer();
+  await pc2.setLocalDescription(answer);
+  log(`[pc2] réponse envoyée (${((Date.now()-t0)/1000).toFixed(1)}s)`);
+  const answerToSend = filterSdp(answer.sdp);
+  await pc1.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answerToSend }));
+
+  log('Négociation envoyée — attente de la connexion relay...');
+
+  // Vérifier les stats après 25s
+  setTimeout(async () => {
+    log('\n=== RÉSULTAT APRÈS 25s ===');
+    for (const [name, pc] of [['pc1', pc1], ['pc2', pc2]]) {
+      log(`${name}: iceConnectionState=${pc.iceConnectionState} connectionState=${pc.connectionState}`);
+      try {
+        const stats = await pc.getStats();
+        let bytesReceived = 0, bytesSent = 0, pairInfo = '';
+        stats.forEach(s => {
+          if (s.type === 'transport' && s.selectedCandidatePairId) {
+            const pair = stats.get(s.selectedCandidatePairId);
+            if (pair) {
+              const local = pair.localCandidate ? pair.localCandidate.candidateType : '?';
+              const remote = pair.remoteCandidate ? pair.remoteCandidate.candidateType : '?';
+              pairInfo = `${local}->${remote}`;
+            }
+          }
+          if (s.type === 'inbound-rtp' && s.bytesReceived) bytesReceived += s.bytesReceived;
+          if (s.type === 'outbound-rtp' && s.bytesSent) bytesSent += s.bytesSent;
+        });
+        log(`${name}: pair=${pairInfo} bytesReceived=${bytesReceived} bytesSent=${bytesSent} gotData=${gotData}`);
+      } catch (e) {
+        log(`${name}: err stats ${e.message}`);
+      }
+    }
+    const ok = gotData && pc1.iceConnectionState === 'connected';
+    log('\n=== VERDICT: ' + (ok ? '✅ LE RELAIS TURN FONCTIONNE (média relayé)' : '❌ LE RELAIS TURN NE RELAYE PAS LE MÉDIA') + ' ===');
+    document.title = ok ? 'RELAY-OK' : 'RELAY-FAIL';
+  }, 25000);
+}
+
+main().catch(e => log('Erreur: ' + e.message));
+</script>
+</body>
+</html>

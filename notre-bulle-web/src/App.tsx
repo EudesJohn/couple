@@ -8,6 +8,8 @@ import Chat from './pages/Chat';
 import CycleCalendar from './pages/CycleCalendar';
 import Settings from './pages/Settings';
 import CallScreen from './pages/CallScreen';
+import CallHistory from './pages/CallHistory';
+import Gallery from './pages/Gallery';
 import CallOverlay from './components/call/CallOverlay';
 import { PresenceHeartbeat } from './components/PresenceHeartbeat';
 import { colors } from './constants/theme';
@@ -80,6 +82,22 @@ export default function App() {
               element={
                 <RequireAuth>
                   <Settings />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/calls"
+              element={
+                <RequireAuth>
+                  <CallHistory />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/gallery"
+              element={
+                <RequireAuth>
+                  <Gallery />
                 </RequireAuth>
               }
             />

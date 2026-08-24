@@ -163,15 +163,27 @@ export async function getCycleEntriesByProfileIds(
 
 // --- Python API ---
 
+/** Récupère le token d'authentification Supabase pour les requêtes API. */
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      return { 'Authorization': `Bearer ${session.access_token}` };
+    }
+  } catch { /* pas de session → requête sans auth (sera rejetée côté serveur) */ }
+  return {};
+}
+
 export async function fetchPredictions(
   entries: CycleEntry[],
   periodLength: number = 5,
   today?: string
 ): Promise<PredictionResult | null> {
   try {
+    const authHeaders = await getAuthHeaders();
     const response = await fetch(`${PYTHON_API_URL}/api/predict`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify({
         entries: entries.map((e) => ({
           profile_id: e.profile_id,

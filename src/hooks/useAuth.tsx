@@ -15,6 +15,29 @@ import {
   type BiometricType,
 } from '../lib/auth';
 
+/**
+ * Lie le profil courant au compte Supabase Auth.
+ * Appelé après signInAnonymously() pour que les politiques RLS
+ * puissent utiliser auth.uid() pour identifier l'utilisateur.
+ */
+async function linkProfileToAuth(authUserId: string): Promise<void> {
+  try {
+    const { getOwnProfileId } = await import('../lib/profile');
+    const profileId = await getOwnProfileId();
+    if (!profileId) return;
+
+    const { error } = await supabase.rpc('link_profile_to_auth', {
+      p_profile_id: profileId,
+      p_auth_user_id: authUserId,
+    });
+    if (error) {
+      console.warn('link_profile_to_auth error:', error.message);
+    }
+  } catch (err) {
+    console.warn('linkProfileToAuth failed:', err);
+  }
+}
+
 interface AuthState {
   isLocked: boolean;
   isFirstLaunch: boolean;
@@ -46,7 +69,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
-        await supabase.auth.signInAnonymously();
+        const { data, error } = await supabase.auth.signInAnonymously();
+        if (data?.user && !error) {
+          // Lier le profil au compte auth pour que RLS fonctionne
+          await linkProfileToAuth(data.user.id);
+        }
+      } else if (session.user) {
+        // Session existante → vérifier que le profil est bien lié
+        await linkProfileToAuth(session.user.id);
       }
     } catch (err) {
       console.warn('Supabase anon sign-in skipped:', err);

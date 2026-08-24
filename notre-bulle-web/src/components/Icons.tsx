@@ -169,3 +169,15 @@ export const CycleIcon = createIcon('M21 12a9 9 0 1 1-9-9 M21 3v6h-6 M15 12a3 3 
 
 // Refresh / Rafraîchir (flèches circulaires)
 export const RefreshIcon = createIcon('M23 4v6h-6 M1 20v-6h6 M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15');
+
+// Historique / Horloge (journal des appels)
+export const HistoryIcon = createIcon('M3 3v5h5 M3.05 13A9 9 0 1 0 6 5.3L3 8 M12 7v5l4 2');
+
+// Plus d'options (⋯)
+export const MoreIcon = ({ size = 24, color = colors.text, strokeWidth = 2 }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={color} xmlns="http://www.w3.org/2000/svg">
+    <circle cx="12" cy="5" r="1.8" />
+    <circle cx="12" cy="12" r="1.8" />
+    <circle cx="12" cy="19" r="1.8" />
+  </svg>
+);

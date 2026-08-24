@@ -18,6 +18,7 @@ import { colors, typography, spacing, borderRadius } from '../src/constants/them
 import {
   hashPin, savePinHash, saveBiometricPrefs,
   getHardwareBiometrics, markSetupDone,
+  saveIdentity, type UserIdentity,
 } from '../src/lib/auth';
 import { useAuth } from '../src/hooks/useAuth';
 import { CheckIcon, LockIcon, UserIcon, HeartIcon } from '../src/components/Icons';
@@ -33,9 +34,14 @@ const NUMPAD_KEYS = [
   ['', '0', '⌫'],
 ];
 
-type SetupStep = 'create' | 'confirm' | 'biometric' | 'done';
+type SetupStep = 'identity' | 'create' | 'confirm' | 'biometric' | 'done';
 
 const STEP_TITLES: Record<SetupStep, { title: string; subtitle: string; icon: React.ReactNode }> = {
+  identity: {
+    title: 'Qui es-tu ?',
+    subtitle: 'Choisis ton profil pour rejoindre la bulle',
+    icon: <UserIcon size={24} color={colors.accent} />,
+  },
   create: {
     title: 'Crée ton code secret',
     subtitle: 'Choisis un code à 4 chiffres',
@@ -61,7 +67,7 @@ const STEP_TITLES: Record<SetupStep, { title: string; subtitle: string; icon: Re
 export default function SetupPinScreen() {
   const { checkAuth } = useAuth();
 
-  const [step, setStep] = useState<SetupStep>('create');
+  const [step, setStep] = useState<SetupStep>('identity');
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [isError, setIsError] = useState(false);
@@ -82,6 +88,11 @@ export default function SetupPinScreen() {
       setHasFingerprint(hw.availableTypes.includes('fingerprint') && hw.isEnrolled);
       setHasFace(hw.availableTypes.includes('face') && hw.isEnrolled);
     });
+  }, []);
+
+  const handlePickIdentity = useCallback(async (role: UserIdentity) => {
+    await saveIdentity(role);
+    setStep('create');
   }, []);
 
   const triggerShake = useCallback((msg: string) => {
@@ -167,8 +178,8 @@ export default function SetupPinScreen() {
 
       {/* Step Indicator */}
       <View style={styles.stepsIndicator}>
-        {(['create', 'confirm', 'biometric', 'done'] as const).map((s, i) => {
-          const order: SetupStep[] = ['create', 'confirm', 'biometric', 'done'];
+        {(['identity', 'create', 'confirm', 'biometric', 'done'] as const).map((s, i) => {
+          const order: SetupStep[] = ['identity', 'create', 'confirm', 'biometric', 'done'];
           const currentIdx = order.indexOf(step);
           const stepIdx = order.indexOf(s);
           const isActive = s === step;
@@ -185,6 +196,37 @@ export default function SetupPinScreen() {
           );
         })}
       </View>
+
+      {/* Identity Selection */}
+      {step === 'identity' && (
+        <Animated.View entering={FadeInDown.duration(500)} style={{ width: '100%', gap: 16 }}>
+          <TouchableOpacity
+            style={styles.identityCard}
+            onPress={() => handlePickIdentity('woman')}
+            activeOpacity={0.7}
+          >
+            <UserIcon size={28} color={colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.identityTitle}>Je suis Elle</Text>
+              <Text style={styles.identitySubtitle}>Femme</Text>
+            </View>
+            <View style={styles.identityRadio} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.identityCard}
+            onPress={() => handlePickIdentity('man')}
+            activeOpacity={0.7}
+          >
+            <UserIcon size={28} color={colors.accent} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.identityTitle}>Je suis Lui</Text>
+              <Text style={styles.identitySubtitle}>Homme</Text>
+            </View>
+            <View style={styles.identityRadio} />
+          </TouchableOpacity>
+        </Animated.View>
+      )}
 
       {/* PIN Input */}
       {(step === 'create' || step === 'confirm') && (
@@ -486,5 +528,36 @@ const styles = StyleSheet.create({
     color: '#FAFAF9',
     fontSize: 18,
     fontWeight: '600',
+  },
+  identityCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    gap: spacing.md,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  identityTitle: {
+    ...typography.subheading,
+    color: colors.text,
+    marginBottom: 2,
+  },
+  identitySubtitle: {
+    ...typography.caption,
+    color: colors.textSecondary,
+  },
+  identityRadio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: colors.border,
   },
 });

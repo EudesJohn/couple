@@ -36,8 +36,8 @@ function ControlBtn({
       onClick={onPress}
       aria-label={label}
       style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-        borderRadius: 20, padding: '8px 4px', minWidth: 72,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+        borderRadius: 16, padding: '6px 2px', minWidth: 60,
         backgroundColor: danger
           ? colors.error
           : active
@@ -48,7 +48,7 @@ function ControlBtn({
       }}
     >
       <div style={{
-        width: 48, height: 48, borderRadius: 24,
+        width: 44, height: 44, borderRadius: 22,
         display: 'flex', justifyContent: 'center', alignItems: 'center',
         backgroundColor: active ? 'rgba(202, 138, 4, 0.15)' : 'rgba(255,255,255,0.06)',
       }}>
@@ -68,7 +68,7 @@ function EndCallBtn({ onPress }: { onPress: () => void }) {
       onClick={onPress}
       aria-label="Raccrocher"
       style={{
-        width: 56, height: 56, borderRadius: 28,
+        width: 50, height: 50, borderRadius: 25,
         backgroundColor: colors.error,
         display: 'flex', justifyContent: 'center', alignItems: 'center',
         border: 'none', cursor: 'pointer',
@@ -230,7 +230,7 @@ export default function CallScreen() {
 
   const {
     callState, callType, callDuration, isMuted, isSpeakerOn,
-    toggleMute, toggleSpeakerFn, endCall, switchCamera, enableVideo,
+    toggleMute, toggleSpeakerFn, endCall, switchCamera, enableVideo, disableVideo,
   } = useCall();
 
   const [webRTCStreams, setWebRTCStreams] = useState<{ local: MediaStream | null; remote: MediaStream | null }>({ local: null, remote: null });
@@ -307,9 +307,28 @@ export default function CallScreen() {
     prevCallStateRef.current = callState;
   }, [callState, navigate]);
 
-  const isVideo = callType === 'video' || routeType === 'video';
+  // callType est la source de vérité (set par startCall/answerCall/enableVideo/disableVideo).
+  // Ne PAS utiliser routeType ici : il reste 'video' dans l'URL même après
+  // disableVideo, ce qui empêchait le retour en mode audio.
+  const isVideo = callType === 'video';
   const isConnected = callState === 'connected';
   const isCalling = callState === 'calling' || callState === 'ringing';
+
+  // Quand on repasse en vidéo après être passé en audio, les <video>
+  // elements sont recréés dans le DOM mais webRTCStreams n'a pas changé
+  // (même référence MediaStream) → on force la ré-attachement des flux.
+  useEffect(() => {
+    if (!isVideo) return;
+    const timer = setTimeout(() => {
+      if (localVideoRef.current && webRTCStreams.local) {
+        localVideoRef.current.srcObject = webRTCStreams.local;
+      }
+      if (remoteVideoRef.current && webRTCStreams.remote) {
+        remoteVideoRef.current.srcObject = webRTCStreams.remote;
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [isVideo]);
 
   // Caméra locale déjà active ? Sinon le bouton caméra active la vidéo
   // (passage audio → vidéo à la volée, comme WhatsApp).
@@ -503,7 +522,7 @@ export default function CallScreen() {
         transition={{ duration: 0.5, delay: 0.3 }}
         style={{
           position: 'absolute', bottom: 0, left: 0, right: 0,
-          padding: '24px 20px calc(24px + env(safe-area-inset-bottom, 0px))',
+          padding: '16px 12px calc(16px + env(safe-area-inset-bottom, 0px))',
           backgroundColor: 'rgba(13, 10, 16, 0.85)',
           borderTopLeftRadius: 32,
           borderTopRightRadius: 32,
@@ -511,7 +530,10 @@ export default function CallScreen() {
         }}
       >
         <div style={{
-          display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: 24,
+          display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: 12,
+          flexWrap: 'wrap',
+          maxWidth: 400,
+          margin: '0 auto',
         }}>
           <ControlBtn onPress={toggleMute} active={isMuted} label={isMuted ? 'Micro coupé' : 'Micro'}>
             {isMuted ? <MicOffIcon size={20} color={colors.error} /> : <MicIcon size={20} color="#FAFAF9" />}
@@ -539,6 +561,16 @@ export default function CallScreen() {
               : <VideoIcon size={20} color={colors.accent} />
             }
           </ControlBtn>
+
+          {/* Bouton Revenir en audio (visible seulement si en vidéo) */}
+          {(localHasVideo || isVideo) && (
+            <ControlBtn
+              onPress={disableVideo}
+              label="Audio"
+            >
+              <MicIcon size={20} color="#FAFAF9" />
+            </ControlBtn>
+          )}
         </div>
       </motion.div>
     </div>

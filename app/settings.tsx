@@ -20,6 +20,7 @@ import Animated, {
 import { colors, typography, spacing, borderRadius } from '../src/constants/theme';
 import { supabase } from '../src/lib/supabase';
 import { hashPin, savePinHash, verifyPin, getStoredPinHash } from '../src/lib/auth';
+import { getOwnProfileId } from '../src/lib/profile';
 import { saveTheme, saveBackgroundImage, removeBackgroundImage, type ChatTheme } from '../src/lib/settings';
 import { compressImage } from '../src/lib/media';
 import {
@@ -260,14 +261,9 @@ export default function SettingsScreen() {
   const [pinStep, setPinStep] = useState<'old' | 'new' | 'confirm'>('old');
   const [pinError, setPinError] = useState('');
 
-  // Get Supabase user ID
+  // Get own profile ID based on stored identity (woman/man)
   const getUserId = useCallback(async (): Promise<string | null> => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user?.id) return session.user.id;
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user?.id) return user.id;
-    const { config } = await import('../src/constants/config');
-    return config.myProfileId ?? null;
+    return getOwnProfileId();
   }, []);
 
   // Load profile
@@ -278,7 +274,7 @@ export default function SettingsScreen() {
       const { data: profile } = await supabase
         .from('profiles')
         .select('display_name, avatar_url')
-        .eq('supabase_uid', userId)
+        .eq('id', userId)
         .single();
       if (profile) {
         setDisplayName(profile.display_name);
@@ -306,7 +302,7 @@ export default function SettingsScreen() {
       const { error } = await supabase
         .from('profiles')
         .update({ display_name: newDisplayName.trim() })
-        .eq('supabase_uid', userId);
+        .eq('id', userId);
       if (error) throw error;
       setDisplayName(newDisplayName.trim());
       showToast('Pseudo modifie');
@@ -411,7 +407,7 @@ export default function SettingsScreen() {
       const { error: updateError } = await supabase
         .from('profiles')
         .update({ avatar_url: publicUrl })
-        .eq('supabase_uid', userId);
+        .eq('id', userId);
       if (updateError) throw updateError;
       setAvatar(publicUrl);
       setPhotoPreview(null);

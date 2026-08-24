@@ -100,8 +100,7 @@
       "myProfileId": "73570391-48dd-49a1-8ca0-4c629228a497",
       "partnerProfileId": "86f95a17-f278-48ce-bf6e-3828976b4b96",
       "appPin": "1234",
-      "zegoAppID": 768218139,
-      "zegoAppSign": "8eab2f7e6edfc4dde07d2e0343f98eb9dd73b0c256eadf16c0997920c7853d71",
+      "meteredApiKey": "",
       "eas": {
         "projectId": "18dffa45-9835-4f48-a312-1fee6fdf51c4"
       }

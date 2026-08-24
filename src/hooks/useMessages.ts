@@ -8,6 +8,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { uploadMedia, compressImage } from '../lib/media';
 import { config } from '../constants/config';
+import { getOwnProfileId } from '../lib/profile';
 import {
   getMessages,
   insertMessage,
@@ -74,25 +75,15 @@ export function useMessages(): UseMessagesReturn {
   const getMyProfileId = useCallback(async (): Promise<string | null> => {
     if (myProfileIdRef.current) return myProfileIdRef.current;
 
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('supabase_uid', user.id)
-          .single();
-
-        if (profile) {
-          setMyProfileId(profile.id);
-          myProfileIdRef.current = profile.id;
-          return profile.id;
-        }
-      }
-    } catch (err) {
-      console.warn('Auth Supabase non disponible, fallback ID config');
+    // Utiliser l'identité stockée (femme/homme) pour résoudre le bon profil
+    const ownId = await getOwnProfileId();
+    if (ownId) {
+      setMyProfileId(ownId);
+      myProfileIdRef.current = ownId;
+      return ownId;
     }
 
+    // Fallback : premier profil configuré
     const fallbackId = config.myProfileId;
     if (fallbackId) {
       myProfileIdRef.current = fallbackId;

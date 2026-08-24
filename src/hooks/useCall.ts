@@ -5,7 +5,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { getCurrentProfile } from '../lib/supabase';
-import { joinRoom, leaveRoom, startPublish, stopPublish, toggleSpeaker, muteMicrophone, startPlayingStream, stopPlayingStream, setOnRemoteStreamUpdate } from '../lib/zego';
+import { joinRoom, leaveRoom, startPublish, stopPublish, toggleSpeaker, muteMicrophone, startPlayingStream, stopPlayingStream, setOnRemoteStreamUpdate, setOnConnectionStateChange, createOffer, switchCamera as switchCameraZego } from '../lib/zego';
 import type { Call, CallType } from '../types/database';
 import { router } from 'expo-router';
 import { notifyIncomingCall, clearBadge } from './useNotifications';
@@ -26,6 +26,7 @@ interface UseCallReturn {
   endCall: () => Promise<void>;
   toggleMute: () => Promise<void>;
   toggleSpeakerFn: () => Promise<void>;
+  switchCamera: () => Promise<boolean>;
   resetCall: () => void;
 }
 
@@ -42,6 +43,10 @@ export function useCall(): UseCallReturn {
   const currentCallIdRef = useRef<string | null>(null);
   const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const remoteStreamIdRef = useRef<string | null>(null);
+  // Flag : l'appel a déjà été connecté (pour wasAnswered dans endCall)
+  const wasEverConnectedRef = useRef(false);
+  // Timer de grâce pour 'disconnected' — WebRTC peut se reconnecter
+  const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Charger les profils
   useEffect(() => {
@@ -112,7 +117,8 @@ export function useCall(): UseCallReturn {
             currentCallIdRef.current === updated.id
           ) {
             setCallState('connecting');
-            await initZegoCall(updated.id, updated.type);
+            // L'appelant a reçu la réponse → non-offerer, attend l'offre du callee
+            await initZegoCall(updated.id, updated.type, false);
           }
 
           // L'autre a rejeté / annulé
@@ -130,32 +136,66 @@ export function useCall(): UseCallReturn {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // ─── Initialiser Zego ───
-  const initZegoCall = useCallback(async (callId: string, type: CallType) => {
+  // ─── Initialiser WebRTC (caller = false, callee = offerer = true) ───
+  const initZegoCall = useCallback(async (callId: string, type: CallType, isOfferer: boolean) => {
     const me = profileRef.current;
     if (!me) return;
 
+    // Toujours installer les callbacks, quelle que soit la branche.
+    setOnConnectionStateChange((state) => {
+      // 'disconnected' est temporaire — WebRTC peut se reconnecter
+      // (réseau mobile instable, transition WiFi/4G). On donne 5s de
+      // grâce avant de considérer l'appel comme terminé.
+      // 'failed' = irrécupérable → on coupe immédiatement.
+      if (state === 'failed') {
+        if (disconnectTimerRef.current) { clearTimeout(disconnectTimerRef.current); disconnectTimerRef.current = null; }
+        setCallState('ended');
+        setTimeout(() => setCallState((s) => s === 'ended' ? 'idle' : s), 2000);
+      } else if (state === 'disconnected') {
+        if (disconnectTimerRef.current) return;
+        disconnectTimerRef.current = setTimeout(() => {
+          disconnectTimerRef.current = null;
+          setCallState((prev) => prev === 'connected' ? 'ended' : prev);
+          setTimeout(() => setCallState((s) => s === 'ended' ? 'idle' : s), 2000);
+        }, 5000);
+      } else if (state === 'connected') {
+        if (disconnectTimerRef.current) {
+          clearTimeout(disconnectTimerRef.current);
+          disconnectTimerRef.current = null;
+        }
+      }
+    });
+
+    // Jouer le flux distant quand il apparaît
+    setOnRemoteStreamUpdate((streams, added) => {
+      if (added && streams.length > 0) {
+        const sid = streams[0].streamID;
+        remoteStreamIdRef.current = sid;
+        startPlayingStream(sid).catch((err) =>
+          console.error('Erreur lecture flux distant:', err)
+        );
+      }
+    });
+
     try {
       await joinRoom(callId, { userID: me.id, userName: me.name });
+      await startPublish(type === 'video');
 
-      // Jouer automatiquement le flux distant quand il apparaît
-      setOnRemoteStreamUpdate((streams, added) => {
-        if (added && streams.length > 0) {
-          const sid = streams[0].streamID;
-          remoteStreamIdRef.current = sid;
-          startPlayingStream(sid).catch((err) =>
-            console.error('Erreur lecture flux distant:', err)
-          );
-        }
-      });
+      // Seul l'appelé (offerer) crée l'offre SDP. L'appelant attend
+      // l'offre → handleOffer → answer.
+      if (isOfferer) {
+        // Petit délai pour laisser l'autre rejoindre le canal de signalisation
+        await new Promise((r) => setTimeout(r, 600));
+        await createOffer();
+      }
 
-      await startPublish();
       setCallState('connected');
+      wasEverConnectedRef.current = true;
       startCallTimer();
     } catch (err) {
-      console.error('Erreur Zego:', err);
+      console.error('Erreur WebRTC:', err);
       setCallState('ended');
-      setTimeout(() => setCallState('idle'), 2000);
+      setTimeout(() => setCallState((s) => s === 'ended' ? 'idle' : s), 2000);
     }
   }, [startCallTimer]);
 
@@ -201,7 +241,8 @@ export function useCall(): UseCallReturn {
       .eq('id', callId);
 
     router.push(`/call?callId=${callId}&type=${incomingCall.type}&role=callee`);
-    await initZegoCall(callId, incomingCall.type);
+    // Le callee est offerer → crée l'offre SDP
+    await initZegoCall(callId, incomingCall.type, true);
   }, [incomingCall, initZegoCall]);
 
   // ─── REJETER ───
@@ -226,16 +267,24 @@ export function useCall(): UseCallReturn {
     }
 
     setOnRemoteStreamUpdate(null);
+    setOnConnectionStateChange(null);
+    if (disconnectTimerRef.current) { clearTimeout(disconnectTimerRef.current); disconnectTimerRef.current = null; }
     await stopPublish();
     await leaveRoom(callId);
 
+    const wasAnswered = wasEverConnectedRef.current;
     await supabase
       .from('calls')
-      .update({ status: 'answered', ended_at: new Date().toISOString(), duration_s: callDuration })
+      .update({
+        status: wasAnswered ? 'answered' : 'cancelled',
+        ended_at: new Date().toISOString(),
+        duration_s: wasAnswered ? callDuration : null,
+      })
       .eq('id', callId);
 
     stopCallTimer();
     currentCallIdRef.current = null;
+    wasEverConnectedRef.current = false;
 
     setTimeout(() => {
       setCallState('idle');
@@ -256,16 +305,27 @@ export function useCall(): UseCallReturn {
     await toggleSpeaker(v);
   }, [isSpeakerOn]);
 
+  const switchCamera = useCallback(async (): Promise<boolean> => {
+    try {
+      return await switchCameraZego();
+    } catch {
+      return false;
+    }
+  }, []);
+
   const resetCall = useCallback(() => {
     setCallState('idle');
     setIncomingCall(null);
     setCallDuration(0);
     currentCallIdRef.current = null;
+    wasEverConnectedRef.current = false;
+    if (disconnectTimerRef.current) { clearTimeout(disconnectTimerRef.current); disconnectTimerRef.current = null; }
     stopCallTimer();
   }, [stopCallTimer]);
 
   return {
     callState, callType, callDuration, isSpeakerOn, isMuted, incomingCall,
-    startCall, answerCall, rejectCall, endCall, toggleMute, toggleSpeakerFn, resetCall,
+    startCall, answerCall, rejectCall, endCall, toggleMute, toggleSpeakerFn,
+    switchCamera, resetCall,
   };
 }

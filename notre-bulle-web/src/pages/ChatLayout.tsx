@@ -12,50 +12,55 @@ import { useAuth } from '../hooks/useAuth';
 import { supabase } from '../lib/supabase';
 import { getActualPartnerProfileId } from '../lib/profile';
 import { downloadMedia } from '../lib/media';
-import { PhoneIcon, VideoIcon, SettingsIcon, HeartFilledIcon, CycleIcon } from '../components/Icons';
+import { PhoneIcon, VideoIcon, HeartFilledIcon, CycleIcon, HistoryIcon, ImageIcon, SettingsIcon } from '../components/Icons';
 import { CallTypeSheet } from '../components/call/CallTypeSheet';
 import { IncomingCallBanner } from '../components/call/IncomingCallBanner';
+import { MoreMenu } from '../components/ui/MoreMenu';
 
 export default function ChatLayout() {
   const navigate = useNavigate();
   const { isPartnerOnline, partnerPresence, lastSeenLabel } = usePresence();
   const { startCall, incomingCall, answerCall, rejectCall, callState } = useCall();
   const { identity } = useAuth();
-  const PARTNER_NAME = identity === 'woman' ? 'Mon chéri' : 'Ma chérie';
+  const FALLBACK_NAME = identity === 'woman' ? 'Mon chéri' : 'Ma chérie';
   const isTyping = partnerPresence?.is_typing ?? false;
   const [callSheetVisible, setCallSheetVisible] = useState(false);
   const [partnerAvatarUrl, setPartnerAvatarUrl] = useState<string | null>(null);
+  const [partnerDisplayName, setPartnerDisplayName] = useState<string | null>(null);
   const avatarBlobUrlRef = useRef<string | null>(null);
 
-  // Charger la photo de profil du partenaire
+  // Charger photo + pseudo du partenaire depuis la base
   useEffect(() => {
     let cancelled = false;
 
-    async function loadPartnerAvatar() {
+    async function loadPartnerProfile() {
       const partnerProfileId = getActualPartnerProfileId();
       if (!partnerProfileId) return;
 
       const { data, error } = await supabase
         .from('profiles')
-        .select('avatar_url')
+        .select('display_name, avatar_url')
         .eq('id', partnerProfileId)
         .single();
 
       if (cancelled) return;
-      if (error || !data?.avatar_url) return;
+      if (error) return;
 
-      try {
-        const blob = await downloadMedia(data.avatar_url);
-        if (cancelled) return;
-        const url = URL.createObjectURL(blob);
-        avatarBlobUrlRef.current = url;
-        setPartnerAvatarUrl(url);
-      } catch {
-        // Fallback silencieux → cœur
+      if (data?.display_name) setPartnerDisplayName(data.display_name);
+      if (data?.avatar_url) {
+        try {
+          const blob = await downloadMedia(data.avatar_url);
+          if (cancelled) return;
+          const url = URL.createObjectURL(blob);
+          avatarBlobUrlRef.current = url;
+          setPartnerAvatarUrl(url);
+        } catch {
+          // Fallback silencieux → cœur
+        }
       }
     }
 
-    loadPartnerAvatar();
+    loadPartnerProfile();
 
     return () => {
       cancelled = true;
@@ -65,6 +70,8 @@ export default function ChatLayout() {
       }
     };
   }, [identity]);
+
+  const partnerName = partnerDisplayName || FALLBACK_NAME;
 
   return (
     <div style={{
@@ -98,7 +105,7 @@ export default function ChatLayout() {
             {partnerAvatarUrl ? (
               <img
                 src={partnerAvatarUrl}
-                alt={PARTNER_NAME}
+                alt={partnerName}
                 style={{
                   width: 40, height: 40,
                   objectFit: 'cover',
@@ -119,9 +126,13 @@ export default function ChatLayout() {
           </div>
 
           {/* Infos */}
-          <div>
-            <div style={{ fontSize: 17, fontWeight: 600, color: colors.text, letterSpacing: -0.3 }}>
-              {PARTNER_NAME}
+          <div style={{ minWidth: 0 }}>
+            <div style={{
+              fontSize: 17, fontWeight: 600, color: colors.text, letterSpacing: -0.3,
+              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+              maxWidth: '26vw',
+            }}>
+              {partnerName}
             </div>
             <div style={{
               fontSize: 12, fontWeight: 500,
@@ -132,31 +143,38 @@ export default function ChatLayout() {
           </div>
         </div>
 
-        {/* Actions */}
+        {/* Actions — les secondaires sont regroupées dans « ⋯ » pour
+            laisser la place au pseudo du partenaire */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <motion.button
-            whileTap={{ scale: 0.94 }}
-            onClick={() => navigate('/cycle')}
-            style={{
-              width: 38, height: 38, borderRadius: 19,
-              backgroundColor: colors.surfaceAlt, border: 'none', cursor: 'pointer',
-              display: 'flex', justifyContent: 'center', alignItems: 'center',
-            }}
-          >
-            <CycleIcon size={18} color={colors.secondary} />
-          </motion.button>
-
-          <motion.button
-            whileTap={{ scale: 0.94 }}
-            onClick={() => navigate('/settings')}
-            style={{
-              width: 38, height: 38, borderRadius: 19,
-              backgroundColor: colors.surfaceAlt, border: 'none', cursor: 'pointer',
-              display: 'flex', justifyContent: 'center', alignItems: 'center',
-            }}
-          >
-            <SettingsIcon size={18} color={colors.textSecondary} />
-          </motion.button>
+          <MoreMenu
+            ariaLabel="Menu"
+            items={[
+              {
+                label: 'Nos souvenirs',
+                icon: ImageIcon,
+                color: colors.secondary,
+                onClick: () => navigate('/gallery'),
+              },
+              {
+                label: 'Journal des appels',
+                icon: HistoryIcon,
+                color: colors.textSecondary,
+                onClick: () => navigate('/calls'),
+              },
+              {
+                label: 'Cycle',
+                icon: CycleIcon,
+                color: colors.secondary,
+                onClick: () => navigate('/cycle'),
+              },
+              {
+                label: 'Paramètres',
+                icon: SettingsIcon,
+                color: colors.textSecondary,
+                onClick: () => navigate('/settings'),
+              },
+            ]}
+          />
 
           <motion.button
             whileTap={{ scale: 0.94 }}
@@ -166,6 +184,7 @@ export default function ChatLayout() {
               backgroundColor: colors.primary, border: 'none', cursor: 'pointer',
               display: 'flex', justifyContent: 'center', alignItems: 'center',
             }}
+            aria-label="Appeler"
           >
             <PhoneIcon size={16} color="#FAFAF9" />
           </motion.button>
@@ -189,7 +208,7 @@ export default function ChatLayout() {
       <IncomingCallBanner
         visible={callState === 'ringing' && incomingCall !== null}
         callType={incomingCall?.type || 'audio'}
-        partnerName={PARTNER_NAME}
+        partnerName={partnerName}
         onAnswer={answerCall}
         onReject={rejectCall}
       />

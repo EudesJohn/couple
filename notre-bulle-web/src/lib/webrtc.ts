@@ -10,6 +10,17 @@ import { config } from '../constants/config';
 // ==========================================================
 type StreamID = string;
 
+// Contraintes de capture vidéo — légèrement au-dessus de 480×288/20fps pour
+// monter la qualité perçue, mais plafonnées à 720p pour ne pas saturer le
+// réseau mobile. WebRTC redescend automatiquement la résolution si la bande
+// passante manque (RFC 5104 congestion control) : on n'envoie pas plus que
+// ce que la connexion peut porter.
+const VIDEO_CONSTRAINTS: MediaTrackConstraints = {
+  width: { ideal: 640, max: 1280 },
+  height: { ideal: 480, max: 720 },
+  frameRate: { ideal: 24, max: 30 },
+};
+
 interface CallUser {
   userID: string;
   userName: string;
@@ -24,6 +35,14 @@ let onUpgradeToVideo: (() => void) | null = null;
 
 export function setOnUpgradeToVideo(cb: (() => void) | null): void {
   onUpgradeToVideo = cb;
+}
+
+// Callback déclenché quand le partenaire bascule vidéo → audio.
+// Permet à l'autre côté de désactiver sa caméra automatiquement.
+let onDowngradeToAudio: (() => void) | null = null;
+
+export function setOnDowngradeToAudio(cb: (() => void) | null): void {
+  onDowngradeToAudio = cb;
 }
 
 export function setOnConnectionStateChange(cb: ((state: string) => void) | null): void {
@@ -43,6 +62,15 @@ class WebRTCManager {
   private isMuted: boolean = false;
   private isSpeakerOn: boolean = false;
   private offerSent: boolean = false;
+  private videoSender: RTCRtpSender | null = null;
+
+  // Dernière offre SDP envoyée — ré-émise périodiquement tant que l'answer
+  // n'est pas arrivée. Corrige le race condition réseau : si le partenaire
+  // n'a pas encore rejoint le canal de signalisation quand l'offre part
+  // (latence mobile, PWA en arrière-plan…), le broadcast est PERDU et
+  // l'appel restait bloqué en 'connecting' à jamais. (En local, la latence
+  // ~0 masque le problème ; entre deux réseaux différents, il apparaît.)
+  private lastOfferSdp: { sdp: string; type: string } | null = null;
 
   // File d'attente ICE candidates : quand les candidats arrivent avant
   // que setRemoteDescription soit appelé, on les stocke ici et on les
@@ -113,8 +141,11 @@ class WebRTCManager {
     const servers = await this.fetchIceServers();
     this.pc = new RTCPeerConnection({ iceServers: servers });
 
-    // Forcer H264 (encodage matériel sur mobile) pour réduire les sauts d'image
-    this.preferH264Codec();
+    // NOTE : preferH264Codec() n'est PAS appelé ici — à ce stade les
+    // transceivers n'existent pas encore (ils sont créés par addTrack dans
+    // startPublish / enableVideo). On l'applique au moment où on génère
+    // l'offre/answer, quand les transceivers sont là (voir createOffer /
+    // handleOffer / renegotiate).
 
     this.pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -165,8 +196,17 @@ class WebRTCManager {
       .on('broadcast', { event: 'sdp-offer' }, ({ payload }: any) => this.handleOffer(payload))
       .on('broadcast', { event: 'sdp-answer' }, ({ payload }: any) => this.handleAnswer(payload))
       .on('broadcast', { event: 'ice-candidate' }, ({ payload }: any) => this.handleIceCandidate(payload))
+      // Le partenaire (non-offerer) a rejoint le canal et demande l'offre :
+      // on la ré-émet si elle existe encore (voir createOffer / handleAnswer)
+      .on('broadcast', { event: 'offer-request' }, async () => {
+        if (this.lastOfferSdp && this.pc && this.pc.signalingState === 'have-local-offer') {
+          await this.sendSignal('sdp-offer', this.lastOfferSdp);
+        }
+      })
       // Passage audio → vidéo demandé par le partenaire : basculer notre UI en vidéo
-      .on('broadcast', { event: 'upgrade-to-video' }, () => onUpgradeToVideo?.());
+      .on('broadcast', { event: 'upgrade-to-video' }, () => onUpgradeToVideo?.())
+      // Passage vidéo → audio demandé par le partenaire : désactiver notre caméra
+      .on('broadcast', { event: 'downgrade-to-audio' }, () => onDowngradeToAudio?.());
 
     await this.signalChannel.subscribe();
   }
@@ -186,11 +226,7 @@ class WebRTCManager {
           echoCancellation: true,
           noiseSuppression: true,
         },
-        video: video ? {
-          width: { ideal: 480, max: 640 },
-          height: { ideal: 288, max: 480 },
-          frameRate: { ideal: 20, max: 24 },
-        } : false,
+        video: video ? VIDEO_CONSTRAINTS : false,
       });
 
       this.localStream.getTracks().forEach(track => {
@@ -222,14 +258,40 @@ class WebRTCManager {
   async createOffer(): Promise<void> {
     if (this.offerSent) return;
     this.offerSent = true;
+    // Les transceivers existent maintenant (addTrack in startPublish/enableVideo)
+    this.preferH264Codec();
     const offer = await this.pc!.createOffer();
     await this.pc!.setLocalDescription(offer);
     await this.limitVideoBitrate();
-    await this.sendSignal('sdp-offer', { sdp: offer.sdp, type: offer.type });
+    const payload = { sdp: offer.sdp || '', type: offer.type };
+    this.lastOfferSdp = payload;
+    await this.sendSignal('sdp-offer', payload);
+
+    // Robustesse réseau : ré-émettre l'offre tant que l'answer n'est pas arrivée
+    // (voir la note sur lastOfferSdp — le broadcast peut être perdu si le
+    // partenaire n'a pas encore rejoint le canal de signalisation).
+    this.startOfferRetry();
+  }
+
+  /** Ré-émet l'offre SDP jusqu'à ce qu'une réponse arrive (max ~7,5 s). */
+  private async startOfferRetry(): Promise<void> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await new Promise(r => setTimeout(r, 1500));
+      // Stop dès que l'answer a été reçue (signalingState repasse à 'stable')
+      if (!this.pc || !this.lastOfferSdp || this.pc.signalingState !== 'have-local-offer') return;
+      await this.sendSignal('sdp-offer', this.lastOfferSdp).catch(() => {});
+    }
   }
 
   async handleOffer(payload: { sdp: string; type: string }): Promise<void> {
     if (!this.pc) return;
+
+    // Idempotence : ignorer une ré-émission de l'offre (retry réseau) quand
+    // on a déjà répondu et que la connexion est établie. Sans ce garde-fou,
+    // une 2e offre identique redéclencherait createAnswer en boucle.
+    if (this.pc.signalingState === 'stable' && this.pc.connectionState === 'connected') {
+      return;
+    }
 
     // Attendre que le flux local soit disponible (getUserMedia + addTrack)
     // pour que l'answer SDP inclue les pistes audio/vidéo.
@@ -256,6 +318,10 @@ class WebRTCManager {
     try {
       await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
 
+      // Les transceivers sont créés par setRemoteDescription → on peut
+      // appliquer la préférence H264 pour que l'answer s'aligne dessus
+      this.preferH264Codec();
+
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
       await this.limitVideoBitrate();
@@ -273,6 +339,8 @@ class WebRTCManager {
     if (this.pc.signalingState === 'stable') return;
     try {
       await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp: payload.sdp, type: payload.type as RTCSdpType }));
+      // L'answer est arrivée → plus besoin de ré-émettre l'offre
+      this.lastOfferSdp = null;
       // Rejouer les ICE candidates arrivés avant le setRemoteDescription
       await this.flushPendingIceCandidates();
     } catch (err) {
@@ -319,8 +387,12 @@ class WebRTCManager {
     });
   }
 
-  // Limite le débit vidéo et configure l'adaptation réseau pour éviter
-  // les sauts d'image sur connexion mobile.
+  // Plafonne le débit vidéo à 900 kbps — un bon compromis pour du 480p
+  // fluide : au-dessus de 300 kbps (qui donnait un 480×288 très compressé),
+  // sans pour autant saturer une connexion mobile. La régulation WebRTC
+  // (congestion control) reste libre de baisser seule sous ce plafond si la
+  // bande passante se dégrade — on ne consomme donc pas plus que le réseau
+  // peut en porter.
   private async limitVideoBitrate(): Promise<void> {
     if (!this.pc) return;
     const senders = this.pc.getSenders();
@@ -329,8 +401,8 @@ class WebRTCManager {
         try {
           const params = sender.getParameters();
           if (!params.encodings) params.encodings = [{}];
-          // 300 kbps max — suffisant pour 360p fluide sans saturer le réseau mobile
-          params.encodings[0].maxBitrate = 300_000;
+          // 900 kbps max — 480p net sans saturer le réseau mobile
+          params.encodings[0].maxBitrate = 900_000;
           // Prioriser le maintien du framerate : baisse la qualité avant de réduire les fps
           (params.encodings[0] as any).degradationPreference = 'maintain-framerate';
           await sender.setParameters(params).catch(() => {});
@@ -341,8 +413,11 @@ class WebRTCManager {
     }
   }
 
-  // Forcer H264 (broadcom/qualcomm hardware encode) — bien plus fluide sur mobile
-  // que VP8/VP9 qui sont encodés en software sur la plupart des appareils iOS/Android
+  // Forcer H264 (encodage matériel hardware sur la plupart des appareils,
+  // y compris des encodeurs made-flow sur iOS/Android) — meilleure image à
+  // débit égal et moins de CPU que VP8/VP9 encodés en software.
+  // Doit être appelée quand les transceivers existent, c'est-à-dire au moment
+  // de générer l'offre/answer (jamais dans joinRoom, qui n'a pas encore de track).
   private preferH264Codec(): void {
     if (!this.pc || !this.pc.getTransceivers) return;
     try {
@@ -353,7 +428,11 @@ class WebRTCManager {
       const other = caps.codecs.filter(c => !c.mimeType.toLowerCase().includes('h264'));
       const preferred = [...h264, ...other];
       for (const tr of this.pc.getTransceivers()) {
-        if (tr.receiver?.track?.kind === 'video' && tr.setCodecPreferences) {
+        // À ce stade la piste peut être côté sender (on capture et on envoie)
+        // ou côté receiver (on reçoit). On vérifie les deux pour ne rater aucune
+        // transceiver vidéo, quel que soit le sens.
+        const kind = tr.sender?.track?.kind || tr.receiver?.track?.kind;
+        if (kind === 'video' && tr.setCodecPreferences) {
           tr.setCodecPreferences(preferred);
         }
       }
@@ -379,7 +458,10 @@ class WebRTCManager {
     this.remoteStreamId = null;
     this.callId = '';
     this.offerSent = false;
+    this.videoSender = null;
+    this.lastOfferSdp = null;
     this.pendingIceCandidates = [];
+    this._teardownMicPipeline();
   }
 
   async stopPublish(): Promise<void> {
@@ -403,7 +485,99 @@ class WebRTCManager {
 
   async toggleSpeaker(enabled: boolean): Promise<void> {
     this.isSpeakerOn = enabled;
-    // Web: pas de contrôle de haut-parleur direct
+    // Booster le gain du micro quand le haut-parleur est activé.
+    // En mode haut-parleur, l'echo cancellation est plus agressif et
+    // réduit la sensibilité perçue du micro. On compense en insérant
+    // un GainNode entre le micro et le RTCPeerConnection (via
+    // MediaStreamDestination) : l'audio boosté est envoyé au
+    // partenaire sans passer par les haut-parleurs (= pas d'echo).
+    await this._applyMicGain(enabled ? 2.5 : 1.0);
+  }
+
+  // ── Web Audio pipeline pour booster le gain du micro ──
+  private _audioCtx: AudioContext | null = null;
+  private _micSource: MediaStreamAudioSourceNode | null = null;
+  private _micGain: GainNode | null = null;
+  private _micDest: MediaStreamAudioDestinationNode | null = null;
+  private _micGainTrack: MediaStreamTrack | null = null;
+  private _micOriginalTrack: MediaStreamTrack | null = null;
+
+  private async _applyMicGain(gain: number): Promise<void> {
+    if (!this.localStream || !this.pc) return;
+    const origTrack = this.localStream.getAudioTracks()[0];
+    if (!origTrack) return;
+
+    try {
+      const sender = this.pc.getSenders().find(s => s.track?.kind === 'audio');
+
+      // Si gain = 1.0, restaurer la piste originale et nettoyer le pipeline
+      if (gain === 1.0) {
+        if (sender && this._micOriginalTrack) {
+          await sender.replaceTrack(this._micOriginalTrack);
+        }
+        this._teardownMicPipeline();
+        return;
+      }
+
+      // Créer le pipeline AudioContext au besoin
+      if (!this._audioCtx || this._audioCtx.state === 'closed') {
+        this._audioCtx = new AudioContext();
+      }
+      const ctx = this._audioCtx;
+      if (ctx.state === 'suspended') await ctx.resume();
+
+      // Déconnecter le pipeline précédent (évite les connexions en double)
+      this._micSource?.disconnect();
+      this._micGain?.disconnect();
+
+      // Source = piste audio du micro
+      this._micSource = ctx.createMediaStreamSource(this.localStream);
+
+      // Gain node
+      this._micGain = ctx.createGain();
+      this._micGain.gain.setValueAtTime(gain, ctx.currentTime);
+
+      // Destination → nouveau MediaStream avec le gain boosté
+      if (!this._micDest) {
+        this._micDest = ctx.createMediaStreamDestination();
+      }
+
+      // Connect : source → gain → destination
+      this._micSource.connect(this._micGain);
+      this._micGain.connect(this._micDest);
+
+      // Remplacer la piste audio dans le sender WebRTC
+      const boostedTrack = this._micDest.stream.getAudioTracks()[0];
+      if (!boostedTrack) return;
+
+      // Sauvegarder la piste originale si pas encore fait
+      if (!this._micOriginalTrack) {
+        this._micOriginalTrack = origTrack;
+      }
+
+      if (sender) {
+        await sender.replaceTrack(boostedTrack);
+        this._micGainTrack = boostedTrack;
+      }
+    } catch (err) {
+      console.warn('[WebRTC] Échec boost gain micro:', err);
+    }
+  }
+
+  /** Nettoie le pipeline Web Audio (gain micro) */
+  private _teardownMicPipeline(): void {
+    try {
+      this._micSource?.disconnect();
+      this._micGain?.disconnect();
+      this._micDest?.stream.getTracks().forEach(t => t.stop());
+      this._audioCtx?.close().catch(() => {});
+    } catch {}
+    this._micSource = null;
+    this._micGain = null;
+    this._micDest = null;
+    this._micGainTrack = null;
+    this._micOriginalTrack = null;
+    this._audioCtx = null;
   }
 
   async muteMicrophone(muted: boolean): Promise<void> {
@@ -447,9 +621,7 @@ class WebRTCManager {
           return navigator.mediaDevices.getUserMedia({
             video: {
               deviceId: { exact: device.deviceId },
-              width: { ideal: 480, max: 640 },
-              height: { ideal: 288, max: 480 },
-              frameRate: { ideal: 20, max: 24 },
+              ...VIDEO_CONSTRAINTS,
             },
             audio: false,
           });
@@ -459,12 +631,12 @@ class WebRTCManager {
         const nf = facing === 'user' ? 'environment' : 'user';
         try {
           return await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { exact: nf }, width: { ideal: 480, max: 640 }, height: { ideal: 288, max: 480 }, frameRate: { ideal: 20, max: 24 } },
+            video: { facingMode: { exact: nf }, ...VIDEO_CONSTRAINTS },
             audio: false,
           });
         } catch {
           return await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: nf, width: { ideal: 480, max: 640 }, height: { ideal: 288, max: 480 }, frameRate: { ideal: 20, max: 24 } },
+            video: { facingMode: nf, ...VIDEO_CONSTRAINTS },
             audio: false,
           });
         }
@@ -519,11 +691,7 @@ class WebRTCManager {
     try {
       // Étape 1 : capturer la caméra (mêmes contraintes qu'à l'init de l'appel)
       const videoStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 480, max: 640 },
-          height: { ideal: 288, max: 480 },
-          frameRate: { ideal: 20, max: 24 },
-        },
+        video: VIDEO_CONSTRAINTS,
         audio: false,
       });
       const vTrack = videoStream.getVideoTracks()[0];
@@ -536,8 +704,16 @@ class WebRTCManager {
       if (!this.localStream) this.localStream = new MediaStream();
       this.localStream.addTrack(vTrack);
 
-      // Étape 3 : envoyer la piste via la RTCPeerConnection (nouveau sender)
-      if (this.pc) this.pc.addTrack(vTrack, this.localStream);
+      // Étape 3 : envoyer la piste via la RTCPeerConnection.
+      // Si un sender vidéo existe déjà (désactivé via replaceTrack(null)),
+      // le réutiliser — sinon en créer un nouveau via addTrack.
+      if (this.pc) {
+        if (this.videoSender) {
+          await this.videoSender.replaceTrack(vTrack).catch(() => {});
+        } else {
+          this.videoSender = this.pc.addTrack(vTrack, this.localStream);
+        }
+      }
 
       // Étape 4 : prévenir le partenaire (bascule d'UI) puis renégocier l'offre SDP.
       // Le broadcast part en premier pour que le partenaire affiche la vidéo dès
@@ -559,6 +735,8 @@ class WebRTCManager {
     if (!this.pc) return;
     // Pas de garde offerSent ici : on veut pouvoir renégocier à volonté
     // (ajout d'une piste vidéo en cours d'appel).
+    // La nouvelle transceiver vidéo vient d'être ajoutée → préférence H264
+    this.preferH264Codec();
     const offer = await this.pc.createOffer();
     await this.pc.setLocalDescription(offer);
     await this.limitVideoBitrate();
@@ -568,6 +746,49 @@ class WebRTCManager {
   private async sendUpgradeToVideo(): Promise<void> {
     if (!this.signalChannel) return;
     await this.signalChannel.send({ type: 'broadcast', event: 'upgrade-to-video', payload: {} });
+  }
+
+  private async sendDowngradeToAudio(): Promise<void> {
+    if (!this.signalChannel) return;
+    await this.signalChannel.send({ type: 'broadcast', event: 'downgrade-to-audio', payload: {} });
+  }
+
+  /** Envoie une demande d'offre au partenaire (utilisé par le non-offerer
+   *  quand il rejoint le canal après l'envoi initial de l'offre). */
+  async requestOffer(): Promise<void> {
+    if (!this.signalChannel) return;
+    await this.signalChannel.send({ type: 'broadcast', event: 'offer-request', payload: {} });
+  }
+
+  /** Désactive la caméra locale et renégocie pour revenir en audio pur.
+   *  Idempotent : ne fait rien si aucune piste vidéo n'est active.
+   *  Utilise replaceTrack(null) au lieu de removeTrack pour garder
+   *  le transceiver actif — sinon réactiver la vidéo après ne fonctionne plus.
+   */
+  async disableVideo(): Promise<boolean> {
+    const vTrack = this.localStream?.getVideoTracks()[0];
+    if (!vTrack) return false;
+
+    try {
+      // Arrêter la piste caméra
+      vTrack.stop();
+      this.localStream?.removeTrack(vTrack);
+
+      // Mettre le sender vidéo en pause SANS détruire le transceiver.
+      // removeTrack() détruit le transceiver → la réactivation échoue.
+      // replaceTrack(null) garde le transceiver actif mais arrête l'envoi.
+      if (this.videoSender) {
+        await this.videoSender.replaceTrack(null).catch(() => {});
+      }
+
+      // Prévenir le partenaire de revenir en audio
+      await this.sendDowngradeToAudio();
+      await this.renegotiate();
+      return true;
+    } catch (err) {
+      console.warn('[WebRTC] Échec désactivation vidéo:', err);
+      return false;
+    }
   }
 
   getLocalStream(): MediaStream | null { return this.localStream; }
@@ -631,6 +852,12 @@ export async function createOffer(): Promise<void> {
   return getWebRTC().createOffer();
 }
 
+/** Demande au partenaire (offerer) de ré-émettre son offre SDP si elle a été
+ *  perdue (canal de signalisation rejoint après l'envoi initial). */
+export async function requestOffer(): Promise<void> {
+  return getWebRTC().requestOffer();
+}
+
 export async function stopPublish(): Promise<void> {
   return getWebRTC().stopPublish();
 }
@@ -658,6 +885,11 @@ export async function switchCamera(): Promise<boolean> {
 /** Active la caméra pour passer un appel audio en appel vidéo à la volée. */
 export async function enableVideo(): Promise<boolean> {
   return getWebRTC().enableVideo();
+}
+
+/** Désactive la caméra pour revenir en audio pur. */
+export async function disableVideo(): Promise<boolean> {
+  return getWebRTC().disableVideo();
 }
 
 /** Vrai si la caméra locale est déjà active. */

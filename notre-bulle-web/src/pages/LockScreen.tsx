@@ -3,11 +3,13 @@
 // 1ʳᵉ connexion : confirmation du profil par UUID → puis code PIN
 // Connexions suivantes : saisie du PIN (fenêtre de 24 h)
 // ============================================================
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { colors, spacing, borderRadius, fonts } from '../constants/theme';
 import { useAuth } from '../hooks/useAuth';
-import { HeartFilledIcon } from '../components/Icons';
+import { supabase } from '../lib/supabase';
+import { config } from '../constants/config';
+import { HeartFilledIcon, UserIcon, UsersIcon, EditIcon } from '../components/Icons';
 
 const PIN_LENGTH = 4;
 
@@ -54,6 +56,184 @@ function FloatingHearts() {
         </motion.div>
       ))}
     </div>
+  );
+}
+
+// ==========================================
+// 👫 Choix du profil — « Je suis Elle / Je suis Lui »
+// Les deux cartes mappent sur les UUID configurés (VITE_MY_PROFILE_ID
+// = la femme, VITE_PARTNER_PROFILE_ID = l'homme). L'UUID reste
+// accessible en fallback via le lien « Saisir mon UUID ».
+// ==========================================
+function ProfilePick({
+  onPick,
+  verifying,
+  error,
+  onShowUuid,
+}: {
+  onPick: (role: 'woman' | 'man') => void;
+  verifying: boolean;
+  error: string;
+  onShowUuid: () => void;
+}) {
+  const [profiles, setProfiles] = useState<{
+    woman: { name: string; avatar: string | null } | null;
+    man: { name: string; avatar: string | null } | null;
+  }>({ woman: null, man: null });
+
+  useEffect(() => {
+    const ids = [config.myProfileId, config.partnerProfileId].filter(Boolean);
+    if (ids.length === 0) return;
+    supabase
+      .from('profiles')
+      .select('id, display_name, avatar_url')
+      .in('id', ids)
+      .then(({ data }: { data: { id: string; display_name: string; avatar_url: string | null }[] | null }) => {
+        if (!data) return;
+        const woman = data.find((p) => p.id === config.myProfileId) ?? null;
+        const man = data.find((p) => p.id === config.partnerProfileId) ?? null;
+        setProfiles({
+          woman: woman ? { name: woman.display_name, avatar: woman.avatar_url } : null,
+          man: man ? { name: man.display_name, avatar: man.avatar_url } : null,
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  const renderCard = (role: 'woman' | 'man', label: string) => {
+    const profile = profiles[role];
+    const uuid = role === 'woman' ? config.myProfileId : config.partnerProfileId;
+    if (!uuid) return null;
+
+    return (
+      <motion.button
+        whileTap={{ scale: 0.96 }}
+        onClick={() => onPick(role)}
+        disabled={verifying}
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          gap: spacing.lg,
+          backgroundColor: colors.surface,
+          border: `1.5px solid ${colors.border}`,
+          borderRadius: borderRadius.xl,
+          padding: `${spacing.lg}px ${spacing.xl}px`,
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+          textAlign: 'left',
+          opacity: verifying ? 0.6 : 1,
+          transition: 'border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease',
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = colors.accent;
+          (e.currentTarget as HTMLButtonElement).style.boxShadow = `0 4px 16px ${colors.shadowStrong}`;
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = colors.border;
+          (e.currentTarget as HTMLButtonElement).style.boxShadow = 'none';
+        }}
+      >
+        {/* Avatar */}
+        <div style={{
+          width: 56, height: 56, borderRadius: 28,
+          backgroundColor: role === 'woman' ? colors.glowBurgundy : colors.surfaceAlt2,
+          display: 'flex', justifyContent: 'center', alignItems: 'center',
+          flexShrink: 0, overflow: 'hidden',
+        }}>
+          {profile?.avatar ? (
+            <img src={profile.avatar} alt={label} style={{ width: 56, height: 56, objectFit: 'cover' }} />
+          ) : (
+            <UserIcon size={26} color={role === 'woman' ? colors.primary : colors.accentDark} />
+          )}
+        </div>
+
+        {/* Texte */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 17, fontWeight: 600, color: colors.text, marginBottom: 2 }}>
+            {profile?.name || label}
+          </div>
+          <div style={{ fontSize: 13, color: colors.textTertiary }}>
+            {role === 'woman' ? 'Je suis elle' : 'Je suis lui'}
+          </div>
+        </div>
+
+        {/* Pastille de sélection */}
+        <div style={{
+          width: 26, height: 26, borderRadius: 13,
+          border: `2px solid ${colors.border}`,
+          display: 'flex', justifyContent: 'center', alignItems: 'center',
+          flexShrink: 0,
+        }}>
+          <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: 'transparent' }} />
+        </div>
+      </motion.button>
+    );
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.2, duration: 0.6 }}
+      style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        width: '100%', maxWidth: 360, position: 'relative', zIndex: 1,
+      }}
+    >
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: spacing.sm,
+        marginBottom: spacing.sm,
+      }}>
+        <UsersIcon size={18} color={colors.accent} />
+        <p style={{
+          fontSize: 15, color: colors.textSecondary,
+          margin: 0, textAlign: 'center',
+        }}>
+          Qui es-tu ?
+        </p>
+      </div>
+
+      <p style={{
+        fontFamily: fonts.body,
+        fontSize: 15,
+        color: colors.textSecondary,
+        textAlign: 'center',
+        lineHeight: '22px',
+        margin: 0, marginBottom: 20,
+      }}>
+        Choisis ton profil pour rejoindre votre bulle
+      </p>
+
+      <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: spacing.md }}>
+        {renderCard('woman', 'Elle')}
+        {renderCard('man', 'Lui')}
+      </div>
+
+      {error && (
+        <motion.p
+          initial={{ opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          style={{ fontSize: 13, color: colors.error, marginTop: 14, textAlign: 'center' }}
+        >
+          {error}
+        </motion.p>
+      )}
+
+      <button
+        onClick={onShowUuid}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          fontFamily: 'inherit', marginTop: spacing.lg,
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}
+      >
+        <EditIcon size={13} color={colors.textTertiary} />
+        <span style={{ fontSize: 13, color: colors.textTertiary, fontStyle: 'italic' }}>
+          Saisir mon UUID manuellement
+        </span>
+      </button>
+    </motion.div>
   );
 }
 
@@ -166,7 +346,7 @@ function ProfileConfirm({
 // ÉCRAN PRINCIPAL
 // ==========================================
 export default function LockScreen() {
-  const { status, confirmProfile, setPin, unlockWithPin, authError, clearAuthError } = useAuth();
+  const { status, confirmProfile, setPin, unlockWithPin, authError, clearAuthError, switchProfile } = useAuth();
 
   // Saisie PIN (setup + déverrouillage)
   const [pin, setPinValue] = useState('');
@@ -182,6 +362,10 @@ export default function LockScreen() {
   // Confirmation du profil
   const [verifying, setVerifying] = useState(false);
   const [uuidError, setUuidError] = useState('');
+  // Par défaut : cartes « Elle / Lui ». Si aucun ID n'est configuré
+  // (env vide), on bascule directement sur la saisie UUID brute.
+  const hasConfiguredProfiles = Boolean(config.myProfileId || config.partnerProfileId);
+  const [showUuidInput, setShowUuidInput] = useState(!hasConfiguredProfiles);
 
   const handleVerifyProfile = useCallback(async (uuid: string) => {
     if (verifying) return;
@@ -192,6 +376,11 @@ export default function LockScreen() {
     if (!res.ok) setUuidError(res.error || 'Erreur inconnue');
     // Succès → le statut passe à 'setupPin', le composant se ré-affiche
   }, [verifying, confirmProfile]);
+
+  const handlePickRole = useCallback((role: 'woman' | 'man') => {
+    const uuid = role === 'woman' ? config.myProfileId : config.partnerProfileId;
+    if (uuid) handleVerifyProfile(uuid);
+  }, [handleVerifyProfile]);
 
   const resetSetupPin = useCallback(() => {
     setPinValue('');
@@ -374,12 +563,23 @@ export default function LockScreen() {
       </motion.div>
 
       {isOnboarding ? (
-        /* ── CONFIRMATION DU PROFIL (UUID) ── */
-        <ProfileConfirm
-          onVerify={handleVerifyProfile}
-          verifying={verifying}
-          error={uuidError}
-        />
+        /* ── CONFIRMATION DU PROFIL ──
+           Par défaut : cartes « Elle / Lui » (plus friendly).
+           L'UUID brut reste disponible via le lien dédié. */
+        showUuidInput ? (
+          <ProfileConfirm
+            onVerify={handleVerifyProfile}
+            verifying={verifying}
+            error={uuidError}
+          />
+        ) : (
+          <ProfilePick
+            onPick={handlePickRole}
+            verifying={verifying}
+            error={uuidError}
+            onShowUuid={() => { setUuidError(''); setShowUuidInput(true); }}
+          />
+        )
       ) : (
         <>
           {/* PIN Dots */}

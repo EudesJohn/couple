@@ -16,7 +16,7 @@
 // ============================================================
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import {
-  saveIdentity, getIdentity,
+  saveIdentity, getIdentity, resetIdentity,
   saveLastUnlock, getLastUnlock, resetAuth,
   saveSessionEpoch, getSessionEpoch,
   LOCK_WINDOW_MS, type UserIdentity,
@@ -38,6 +38,7 @@ interface AuthState {
   unlockWithPin: (pin: string) => Promise<boolean>;
   lock: () => void;
   disconnect: () => Promise<void>;
+  switchProfile: () => void;
   checkAuth: () => Promise<void>;
   clearAuthError: () => void;
 }
@@ -64,7 +65,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return normalizeRow(res.data);
   }, []);
 
+  /**
+   * Lie le profil courant au compte Supabase Auth.
+   * Appelé après signInAnonymously() pour que les politiques RLS
+   * puissent utiliser auth.uid() pour identifier l'utilisateur.
+   */
+  const linkProfileToAuth = useCallback(async (authUserId: string) => {
+    try {
+      const profileId = getOwnProfileId();
+      if (!profileId) return;
+      const { error } = await supabase.rpc('link_profile_to_auth', {
+        p_profile_id: profileId,
+        p_auth_user_id: authUserId,
+      });
+      if (error) console.warn('link_profile_to_auth error:', error.message);
+    } catch (err) {
+      console.warn('linkProfileToAuth failed:', err);
+    }
+  }, []);
+
   const checkAuth = useCallback(async () => {
+    // 0. Connexion anonyme Supabase (nécessaire pour RLS)
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        const { data, error } = await supabase.auth.signInAnonymously();
+        if (data?.user && !error) {
+          await linkProfileToAuth(data.user.id);
+        }
+      } else if (session.user) {
+        await linkProfileToAuth(session.user.id);
+      }
+    } catch (err) {
+      console.warn('Supabase anon sign-in skipped:', err);
+    }
+
     const storedIdentity = await getIdentity();
     if (!storedIdentity) {
       // Aucune identité → onboarding (confirmation du profil)
@@ -228,6 +263,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('onboarding');
   }, []);
 
+  /** Change de profil : efface uniquement l'identité pour revenir
+   *  au choix "Elle / Lui". Le PIN reste enregistré. */
+  const switchProfile = useCallback(() => {
+    resetIdentity();
+    setIdentity(null);
+    setAuthError(null);
+    setStatus('onboarding');
+  }, []);
+
   const clearAuthError = useCallback(() => {
     setAuthError(null);
   }, []);
@@ -289,6 +333,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       unlockWithPin,
       lock,
       disconnect,
+      switchProfile,
       checkAuth,
       clearAuthError,
     }}>
