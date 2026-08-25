@@ -16,6 +16,9 @@ from pydantic import BaseModel
 from urllib.parse import quote
 import httpx
 
+# Proxy Supabase — masque la clé anon du frontend
+from .supa_proxy import router as supa_router
+
 # ============================================================
 # PRÉDICTEUR DE CYCLE (intégré — pas d'import entre fichiers)
 # ============================================================
@@ -320,15 +323,17 @@ ALLOWED_ORIGINS = [
     "https://notre-bulle-web.vercel.app",
     "http://localhost:5173",   # dev Vite
     "http://localhost:3000",   # dev fallback
-]
-
-app.add_middleware(
+]app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS", "DELETE", "PATCH"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+# Inclure le router proxy Supabase (masque la clé anon du frontend)
+app.include_router(supa_router)
+
 
 logger = logging.getLogger("notre-bulle-api")
 

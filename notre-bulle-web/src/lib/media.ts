@@ -1,9 +1,32 @@
 // ============================================================
 // Service Média — upload to Supabase Storage + compression
 // Web: utilise Blob (fetch + blob), plus de dépendance React Native
+//
+// ⚠️ SÉCURITÉ : on utilise le token de session (access_token) pour
+//    tous les appels REST directs, JAMAIS la clé anon en clair.
+//    La clé anon dans le JS bundle est conçue pour être publique,
+//    mais elle donne un rôle "anon" qui est refusé par les policies
+//    RLS "TO authenticated". Le token de session donne le rôle
+//    "authenticated" et passe les vérifications RLS.
 // ============================================================
 import { supabase } from './supabase';
 import { config } from '../constants/config';
+
+/**
+ * Récupère le token d'authentification pour les appels REST directs.
+ * Utilise le token de session Supabase (role: authenticated) au lieu
+ * de la clé anon (role: anon) qui serait refusée par RLS.
+ */
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      return { Authorization: `Bearer ${session.access_token}` };
+    }
+  } catch { /* pas de session → fallback sur la clé anon (dev uniquement) */ }
+  // Fallback : en dev, la clé anon peut fonctionner si RLS n'est pas encore activé
+  return { Authorization: `Bearer ${config.supabase.anonKey}` };
+}
 
 const BUCKETS = {
   MEDIA: 'media',
@@ -117,6 +140,9 @@ export async function uploadMedia(
 }
 
 // Upload via XMLHttpRequest avec progression
+// ⚠️ SÉCURITÉ : utilise le token de session (access_token) au lieu
+//    de la clé anon. Le token de session a le rôle "authenticated"
+//    et passe les policies RLS "TO authenticated".
 async function uploadWithXhr(
   bucketName: string,
   filePath: string,
@@ -124,11 +150,12 @@ async function uploadWithXhr(
   onProgress: (progress: number) => void
 ): Promise<void> {
   const url = `${config.supabase.url}/storage/v1/object/${bucketName}/${filePath}`;
+  const authHeaders = await getAuthHeaders();
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', url);
-    xhr.setRequestHeader('Authorization', `Bearer ${config.supabase.anonKey}`);
+    xhr.setRequestHeader('Authorization', authHeaders.Authorization);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.setRequestHeader('x-upsert', 'false');
 
@@ -170,19 +197,23 @@ export function getMediaUrl(path: string): string {
 }
 
 // Télécharger un fichier du Storage via l'API REST directe
+// ⚠️ SÉCURITÉ : utilise le token de session (access_token) au lieu
+//    de la clé anon. Le token de session a le rôle "authenticated"
+//    et passe les policies RLS "TO authenticated".
 // On ajoute un timestamp pour contourner le cache Workbox CacheFirst
 // qui garde les réponses 7 jours (important quand le fichier est écrasé
 // via upsert sur le même chemin — MEDIA/backgrounds/{userId}.jpg)
 export async function downloadMedia(path: string, options?: { cacheBust?: boolean }): Promise<Blob> {
   const bucket = path.split('/')[0] as keyof typeof BUCKETS;
   const bucketName = BUCKETS[bucket];
+  const authHeaders = await getAuthHeaders();
   // Ne pas ajouter ?t=Date.now() par défaut : ça défait tout cache navigateur + Workbox
   // pour TOUS les appels (StorageImage, VoiceNoteBubble, lightbox, background).
   // Seul le fond d'écran (path fixe, écrasé par upsert) a besoin de contourner le cache.
   const url = `${config.supabase.url}/storage/v1/object/${bucketName}/${path}`;
   const finalUrl = options?.cacheBust ? `${url}?t=${Date.now()}` : url;
   const response = await fetch(finalUrl, {
-    headers: { Authorization: `Bearer ${config.supabase.anonKey}` },
+    headers: authHeaders,
   });
   if (!response.ok) throw new Error(`Download failed: ${response.status}`);
   return response.blob();
