@@ -587,7 +587,9 @@ ALLOWED_ORIGINS = [
     "https://notre-bulle-web.vercel.app",
     "http://localhost:5173",   # dev Vite
     "http://localhost:3000",   # dev fallback
-]app.add_middleware(
+]
+
+app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
