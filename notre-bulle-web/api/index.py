@@ -17,7 +17,10 @@ from urllib.parse import quote
 import httpx
 
 # Proxy Supabase — masque la clé anon du frontend
-from .supa_proxy import router as supa_router
+try:
+    from supa_proxy import router as supa_router
+except ImportError:
+    from .supa_proxy import router as supa_router
 
 # ============================================================
 # PRÉDICTEUR DE CYCLE (intégré — pas d'import entre fichiers)
