@@ -5,22 +5,283 @@
 import uuid
 import os
 import json
+import time as _time
+import base64
 import logging
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from statistics import median, stdev
 
-from fastapi import FastAPI, HTTPException, Query, Header
+from fastapi import FastAPI, HTTPException, Query, Header, APIRouter, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 from urllib.parse import quote
 import httpx
 
-# Proxy Supabase — masque la clé anon du frontend
-try:
-    from supa_proxy import router as supa_router
-except ImportError:
-    from .supa_proxy import router as supa_router
+# ============================================================
+# PROXY SUPABASE — masque la clé anon du frontend
+# (intégré directement dans index.py pour compatibilité Vercel)
+# ============================================================
+supa_router = APIRouter(prefix="/api/supa", tags=["supabase-proxy"])
+
+SUPA_URL = os.environ.get("VITE_SUPABASE_URL", "")
+SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPA_ANON_KEY = os.environ.get("VITE_SUPABASE_ANON_KEY", "")
+
+
+def _decode_jwt(token: str) -> Optional[Dict]:
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1]
+        payload += "=" * (4 - len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload)
+        data = json.loads(decoded)
+        exp = data.get("exp", 0)
+        if exp and exp < _time.time():
+            return None
+        return data
+    except Exception:
+        return None
+
+
+async def _verify_token(authorization: Optional[str]) -> Dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token manquant")
+    token = authorization[7:]
+    payload = _decode_jwt(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token invalide ou expiré")
+    role = payload.get("role", "")
+    if role not in ("authenticated", "anon"):
+        raise HTTPException(status_code=401, detail="Rôle invalide")
+    return payload
+
+
+def _svc_headers() -> Dict[str, str]:
+    key = SERVICE_ROLE_KEY or SUPA_ANON_KEY
+    return {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+
+async def _is_authorized(auth_uid: str) -> bool:
+    if not SUPA_URL:
+        return False
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{SUPA_URL}/rest/v1/profiles?auth_user_id=eq.{auth_uid}&select=id", headers=_svc_headers(), timeout=5.0)
+        return r.status_code == 200 and len(r.json()) > 0
+
+
+async def _get_profile_by_auth(auth_uid: str) -> Optional[Dict]:
+    if not SUPA_URL:
+        return None
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{SUPA_URL}/rest/v1/profiles?auth_user_id=eq.{auth_uid}&select=id,display_name,avatar_url", headers=_svc_headers(), timeout=5.0)
+        if r.status_code == 200:
+            d = r.json()
+            return d[0] if d else None
+    return None
+
+
+class _SupaQuery(BaseModel):
+    table: str
+    select: str = "*"
+    filters: Optional[Dict[str, Any]] = None
+    order: Optional[str] = None
+    limit: Optional[int] = None
+    single: bool = False
+
+
+class _SupaUpsert(BaseModel):
+    table: str
+    data: Dict[str, Any]
+    on_conflict: Optional[str] = None
+
+
+class _SupaUpdate(BaseModel):
+    table: str
+    data: Dict[str, Any]
+    filters: Dict[str, Any]
+
+
+class _SupaDelete(BaseModel):
+    table: str
+    filters: Dict[str, Any]
+
+
+class _StorageSign(BaseModel):
+    bucket: str
+    path: str
+    expires_in: int = 3600
+
+
+@supa_router.post("/query")
+async def proxy_query(req: _SupaQuery, authorization: Optional[str] = Header(None)):
+    p = await _verify_token(authorization)
+    if not await _is_authorized(p.get("sub", "")):
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    if not SUPA_URL:
+        raise HTTPException(status_code=500, detail="Supabase non configuré")
+    url = f"{SUPA_URL}/rest/v1/{req.table}?select={req.select}"
+    if req.filters:
+        for k, v in req.filters.items():
+            if isinstance(v, dict):
+                for op, val in v.items():
+                    url += f"&{k}={op}.{val}"
+            else:
+                url += f"&{k}=eq.{v}"
+    if req.order:
+        url += f"&order={req.order}"
+    if req.limit:
+        url += f"&limit={req.limit}"
+    if req.single:
+        url += "&limit=1"
+    async with httpx.AsyncClient() as c:
+        r = await c.get(url, headers=_svc_headers(), timeout=10.0)
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=r.text[:200])
+    data = r.json()
+    if req.single and isinstance(data, list) and data:
+        return data[0]
+    return data
+
+
+@supa_router.post("/upsert")
+async def proxy_upsert(req: _SupaUpsert, authorization: Optional[str] = Header(None)):
+    p = await _verify_token(authorization)
+    if not await _is_authorized(p.get("sub", "")):
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    if not SUPA_URL:
+        raise HTTPException(status_code=500, detail="Supabase non configuré")
+    h = _svc_headers(); h["Prefer"] = "return=minimal"
+    url = f"{SUPA_URL}/rest/v1/{req.table}"
+    if req.on_conflict:
+        url += f"?on_conflict={req.on_conflict}"
+    async with httpx.AsyncClient() as c:
+        r = await c.post(url, headers=h, json=req.data, timeout=10.0)
+    if r.status_code >= 400:
+        if "23505" in r.text:
+            return {"status": "ok", "detail": "duplicate ignored"}
+        raise HTTPException(status_code=r.status_code, detail=r.text[:200])
+    return {"status": "ok"}
+
+
+@supa_router.post("/update")
+async def proxy_update(req: _SupaUpdate, authorization: Optional[str] = Header(None)):
+    p = await _verify_token(authorization)
+    if not await _is_authorized(p.get("sub", "")):
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    if not SUPA_URL:
+        raise HTTPException(status_code=500, detail="Supabase non configuré")
+    h = _svc_headers(); h["Prefer"] = "return=minimal"
+    filt = "&".join(f"{k}=eq.{v}" for k, v in req.filters.items())
+    async with httpx.AsyncClient() as c:
+        r = await c.patch(f"{SUPA_URL}/rest/v1/{req.table}?{filt}", headers=h, json=req.data, timeout=10.0)
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=r.text[:200])
+    return {"status": "ok"}
+
+
+@supa_router.post("/delete")
+async def proxy_delete(req: _SupaDelete, authorization: Optional[str] = Header(None)):
+    p = await _verify_token(authorization)
+    if not await _is_authorized(p.get("sub", "")):
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    if not SUPA_URL:
+        raise HTTPException(status_code=500, detail="Supabase non configuré")
+    h = _svc_headers(); h["Prefer"] = "return=minimal"
+    filt = "&".join(f"{k}=eq.{v}" for k, v in req.filters.items())
+    async with httpx.AsyncClient() as c:
+        r = await c.delete(f"{SUPA_URL}/rest/v1/{req.table}?{filt}", headers=h, timeout=10.0)
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=r.text[:200])
+    return {"status": "ok"}
+
+
+@supa_router.post("/rpc/{fn}")
+async def proxy_rpc(fn: str, request: Request, authorization: Optional[str] = Header(None)):
+    p = await _verify_token(authorization)
+    if not await _is_authorized(p.get("sub", "")):
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    if not SUPA_URL:
+        raise HTTPException(status_code=500, detail="Supabase non configuré")
+    body = await request.json()
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{SUPA_URL}/rest/v1/rpc/{fn}", headers=_svc_headers(), json=body, timeout=10.0)
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=r.text[:200])
+    data = r.json()
+    if isinstance(data, list) and data:
+        return data[0]
+    return data
+
+
+@supa_router.post("/storage/upload")
+async def proxy_storage_upload(req: _StorageSign, authorization: Optional[str] = Header(None)):
+    p = await _verify_token(authorization)
+    if not await _is_authorized(p.get("sub", "")):
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    if not SUPA_URL:
+        raise HTTPException(status_code=500, detail="Supabase non configuré")
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{SUPA_URL}/storage/v1/object/sign/{req.bucket}/{req.path}", headers=_svc_headers(), json={"expiresIn": 60}, timeout=10.0)
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=r.text[:200])
+    signed = r.json().get("signedURL", "")
+    if not signed:
+        raise HTTPException(status_code=500, detail="URL signée non générée")
+    return {"upload_url": f"{SUPA_URL}{signed}", "path": req.path}
+
+
+@supa_router.post("/storage/download")
+async def proxy_storage_download(req: _StorageSign, authorization: Optional[str] = Header(None)):
+    p = await _verify_token(authorization)
+    if not await _is_authorized(p.get("sub", "")):
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    if not SUPA_URL:
+        raise HTTPException(status_code=500, detail="Supabase non configuré")
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{SUPA_URL}/storage/v1/object/sign/{req.bucket}/{req.path}", headers=_svc_headers(), json={"expiresIn": req.expires_in}, timeout=10.0)
+    if r.status_code >= 400:
+        raise HTTPException(status_code=r.status_code, detail=r.text[:200])
+    signed = r.json().get("signedURL", "")
+    if not signed:
+        raise HTTPException(status_code=500, detail="URL signée non générée")
+    return {"download_url": f"{SUPA_URL}{signed}", "path": req.path}
+
+
+@supa_router.get("/profiles/me")
+async def proxy_profile_me(authorization: Optional[str] = Header(None)):
+    p = await _verify_token(authorization)
+    profile = await _get_profile_by_auth(p.get("sub", ""))
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    return profile
+
+
+@supa_router.get("/profiles/{pid}")
+async def proxy_profile(pid: str, authorization: Optional[str] = Header(None)):
+    p = await _verify_token(authorization)
+    if not await _is_authorized(p.get("sub", "")):
+        raise HTTPException(status_code=403, detail="Non autorisé")
+    if not SUPA_URL:
+        raise HTTPException(status_code=500, detail="Supabase non configuré")
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{SUPA_URL}/rest/v1/profiles?id=eq.{pid}&select=id,display_name,avatar_url", headers=_svc_headers(), timeout=5.0)
+    if r.status_code != 200:
+        raise HTTPException(status_code=500, detail="Erreur serveur")
+    data = r.json()
+    if not data:
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    return data[0]
+
+
+@supa_router.get("/health")
+async def proxy_health():
+    return {"status": "ok", "service": "Supabase Proxy", "has_service_role": bool(SERVICE_ROLE_KEY), "has_anon_key": bool(SUPA_ANON_KEY)}
+
+# --- FIN PROXY SUPABASE ---
 
 # ============================================================
 # PRÉDICTEUR DE CYCLE (intégré — pas d'import entre fichiers)
