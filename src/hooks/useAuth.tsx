@@ -17,18 +17,24 @@ import {
 
 /**
  * Lie le profil courant au compte Supabase Auth.
- * Appelé après signInAnonymously() pour que les politiques RLS
- * puissent utiliser auth.uid() pour identifier l'utilisateur.
+ * ⚠️ SÉCURITÉ (audit v3+) : la liaison exige désormais le PIN du couple
+ * (vérifié côté serveur). Elle n'est donc appelée qu'APRÈS un déverrouillage
+ * PIN réussi — jamais au démarrage, sinon n'importe qui pourrait
+ * s'approprier un profil et contourner la RLS.
  */
-async function linkProfileToAuth(authUserId: string): Promise<void> {
+async function linkProfileToAuth(pin: string): Promise<void> {
   try {
     const { getOwnProfileId } = await import('../lib/profile');
     const profileId = await getOwnProfileId();
     if (!profileId) return;
 
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user?.id) return;
+
     const { error } = await supabase.rpc('link_profile_to_auth', {
       p_profile_id: profileId,
-      p_auth_user_id: authUserId,
+      p_auth_user_id: session.user.id,
+      p_pin: pin,
     });
     if (error) {
       console.warn('link_profile_to_auth error:', error.message);
@@ -65,18 +71,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Vérifier l'état au montage + connexion Supabase anonyme
   const checkAuth = useCallback(async () => {
-    // 1. Connexion anonyme Supabase (nécessaire pour RLS Storage/DB)
+    // 1. Connexion anonyme Supabase (nécessaire pour RLS Storage/DB).
+    // ⚠️ SÉCURITÉ : on ne lie PLUS le profil ici — la liaison se fait
+    // uniquement après vérification du PIN (voir linkProfileToAuth).
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
-        const { data, error } = await supabase.auth.signInAnonymously();
-        if (data?.user && !error) {
-          // Lier le profil au compte auth pour que RLS fonctionne
-          await linkProfileToAuth(data.user.id);
-        }
-      } else if (session.user) {
-        // Session existante → vérifier que le profil est bien lié
-        await linkProfileToAuth(session.user.id);
+        await supabase.auth.signInAnonymously();
       }
     } catch (err) {
       console.warn('Supabase anon sign-in skipped:', err);
@@ -127,6 +128,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const valid = await verifyPin(pin, hash);
     if (valid) {
       setIsLocked(false);
+      // Lier le profil au compte auth (RLS) — PIN validé localement
+      await linkProfileToAuth(pin);
       return true;
     }
     return false;

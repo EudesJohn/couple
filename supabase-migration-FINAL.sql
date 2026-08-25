@@ -497,7 +497,8 @@ CREATE POLICY "pin_attempts_service_role"
 -- ============================================================
 -- Les buckets media, voice-notes, thumbnails sont en mode privé.
 -- Seuls les utilisateurs authentifiés peuvent lire/écrire.
--- Exception : les avatars sont en lecture publique (nécessaire pour l'UI).
+-- ⚠️ AUDIT v3 : plus AUCUNE exception publique, même pour les avatars
+-- (une policy sans TO authenticated permet le bypass des signed URLs).
 
 -- Supprimer les anciennes policies publiques
 DROP POLICY IF EXISTS "Public upload media" ON storage.objects;
@@ -537,11 +538,7 @@ DROP POLICY IF EXISTS "storage_delete_auth" ON storage.objects;
 DROP POLICY IF EXISTS "storage_select_auth" ON storage.objects;
 
 -- ── Bucket media ──
--- SELECT : avatars en lecture publique, le reste en auth uniquement
-CREATE POLICY "media_select_public_avatars"
-  ON storage.objects FOR SELECT
-  USING (bucket_id = 'media' AND name LIKE 'avatars/%');
-
+-- SELECT : authentifiés uniquement (audit v3 — plus d'exception avatars)
 CREATE POLICY "media_select_auth"
   ON storage.objects FOR SELECT
   TO authenticated

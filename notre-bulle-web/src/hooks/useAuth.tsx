@@ -67,16 +67,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   /**
    * Lie le profil courant au compte Supabase Auth.
-   * Appelé après signInAnonymously() pour que les politiques RLS
-   * puissent utiliser auth.uid() pour identifier l'utilisateur.
+   * ⚠️ SÉCURITÉ (audit v3+) : la liaison exige désormais le PIN du couple
+   * (vérifié côté serveur). Elle n'est donc appelée qu'APRÈS une saisie
+   * de PIN réussie — jamais au démarrage, sinon n'importe quel visiteur
+   * pourrait s'approprier un profil et contourner la RLS.
    */
-  const linkProfileToAuth = useCallback(async (authUserId: string) => {
+  const linkProfileToAuth = useCallback(async (pin: string) => {
     try {
       const profileId = getOwnProfileId();
       if (!profileId) return;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user?.id) return;
       const { error } = await supabase.rpc('link_profile_to_auth', {
         p_profile_id: profileId,
-        p_auth_user_id: authUserId,
+        p_auth_user_id: session.user.id,
+        p_pin: pin,
       });
       if (error) console.warn('link_profile_to_auth error:', error.message);
     } catch (err) {
@@ -85,16 +90,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const checkAuth = useCallback(async () => {
-    // 0. Connexion anonyme Supabase (nécessaire pour RLS)
+    // 0. Connexion anonyme Supabase (nécessaire pour RLS).
+    // ⚠️ SÉCURITÉ : on ne lie PLUS le profil ici — la liaison se fait
+    // uniquement après vérification du PIN (voir linkProfileToAuth).
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
-        const { data, error } = await supabase.auth.signInAnonymously();
-        if (data?.user && !error) {
-          await linkProfileToAuth(data.user.id);
-        }
-      } else if (session.user) {
-        await linkProfileToAuth(session.user.id);
+        await supabase.auth.signInAnonymously();
       }
     } catch (err) {
       console.warn('Supabase anon sign-in skipped:', err);
@@ -171,13 +173,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { ok: false, error: 'UUID inconnu · il ne correspond à aucun profil configuré' };
     }
 
-    // Vérifier que le profil existe bien en base
+    // Vérifier que le profil existe bien en base.
+    // ⚠️ SÉCURITÉ : plus de SELECT direct sur profiles (bloqué par RLS
+    // pour un visiteur non lié) → RPC security definer dédiée.
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('id', trimmed)
-        .maybeSingle();
+      const { data, error } = await supabase.rpc('profile_exists', { p_profile_id: trimmed });
       if (error) throw error;
       if (!data) return { ok: false, error: 'Profil introuvable en base' };
     } catch {
@@ -217,6 +217,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const row = await callRpc('set_couple_pin', { p_profile_id: profileId, p_pin: pin });
       if (!row?.ok) return false;
+      // Lier le profil au compte auth (RLS) — PIN validé côté serveur
+      await linkProfileToAuth(pin);
       await saveSessionEpoch(row.session_epoch ?? 0);
       await saveLastUnlock();
       clearProfileCache();
@@ -237,6 +239,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const row = await callRpc('login_couple_pin', { p_profile_id: profileId, p_pin: pin });
       if (!row?.ok) return false;
+      // Lier/relire le profil au compte auth (RLS) — PIN validé côté serveur
+      await linkProfileToAuth(pin);
       await saveSessionEpoch(row.session_epoch ?? 0);
       await saveLastUnlock();
       clearProfileCache();

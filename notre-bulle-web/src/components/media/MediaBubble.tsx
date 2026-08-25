@@ -2,9 +2,9 @@
 // Bulle media premium — Image ou Video dans le chat
 // Design Burgundy & Gold
 // ============================================================
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { colors, borderRadius, spacing } from '../../constants/theme';
-import { getMediaUrl } from '../../lib/media';
+import { downloadMedia } from '../../lib/media';
 import { PlayIcon, ImageIcon, VideoIcon } from '../Icons';
 
 interface MediaBubbleProps {
@@ -29,8 +29,31 @@ export function MediaBubble({
 }: MediaBubbleProps) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
+  // ⚠️ SÉCURITÉ (audit v3) : téléchargement authentifié via token de
+  // session — jamais d'URL publique (buckets privés).
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
 
-  const imageUrl = getMediaUrl(storagePath);
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setBlobUrl(null);
+    setHasError(false);
+    downloadMedia(storagePath)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setHasError(true);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [storagePath]);
+
+  const imageUrl = blobUrl;
   const isVideo = mimeType.startsWith('video/');
   const maxBubbleWidth = 240;
   const aspectRatio = imgWidth / imgHeight;
@@ -72,7 +95,7 @@ export function MediaBubble({
         style={{ position: 'relative', cursor: onPress ? 'pointer' : 'default' }}
       >
         <img
-          src={imageUrl}
+          src={imageUrl ?? undefined}
           alt="Media"
           style={{
             width: displayWidth,

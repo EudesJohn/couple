@@ -59,10 +59,10 @@ $$;
 -- Supprimer les anciennes policies
 DROP POLICY IF EXISTS full_access ON profiles;
 
--- SELECT : seul le propriétaire peut voir son profil
-CREATE POLICY "profiles_select_own"
+-- SELECT : les deux membres du couple voient les deux profils
+CREATE POLICY "profiles_select_authorized"
   ON profiles FOR SELECT
-  USING (auth_user_id = auth.uid());
+  USING (is_authorized_profile());
 
 -- UPDATE : seul le propriétaire peut modifier son profil
 CREATE POLICY "profiles_update_own"
@@ -409,10 +409,14 @@ AS $$
 $$;
 
 -- Politiques bucket media (avatars, backgrounds)
--- Lecture publique (les avatars sont visibles sans auth)
-CREATE POLICY "media_read_public"
+-- Lecture pour les utilisateurs authentifiés du couple
+CREATE POLICY "media_select_auth"
   ON storage.objects FOR SELECT
+  TO authenticated
   USING (bucket_id = 'media');
+-- ⚠️ AUDIT v3 : la lecture publique des avatars est SUPPRIMÉE.
+-- Une policy sans `TO authenticated` couvre aussi anon et permet le
+-- bypass des signed URLs. Voir migrations/20250825_audit_v3_fixes.sql.
 
 -- Upload : uniquement les utilisateurs authentifiés
 CREATE POLICY "media_insert_auth"
@@ -433,9 +437,10 @@ CREATE POLICY "media_delete_auth"
   USING (bucket_id = 'media');
 
 -- Politiques bucket voice-notes
--- Lecture publique (les notes vocales partagées)
-CREATE POLICY "voice_notes_read_public"
+-- ⚠️ Lecture uniquement pour les utilisateurs authentifiés (pas de public)
+CREATE POLICY "voice_notes_select_auth"
   ON storage.objects FOR SELECT
+  TO authenticated
   USING (bucket_id = 'voice-notes');
 
 -- Upload : uniquement les utilisateurs authentifiés
@@ -456,9 +461,10 @@ CREATE POLICY "voice_notes_delete_auth"
   USING (bucket_id = 'voice-notes');
 
 -- Politiques bucket thumbnails
--- Lecture publique
-CREATE POLICY "thumbnails_read_public"
+-- ⚠️ Lecture uniquement pour les utilisateurs authentifiés (pas de public)
+CREATE POLICY "thumbnails_select_auth"
   ON storage.objects FOR SELECT
+  TO authenticated
   USING (bucket_id = 'thumbnails');
 
 -- Upload/Update/Delete : uniquement les utilisateurs authentifiés
@@ -534,6 +540,7 @@ ALTER TABLE pin_attempts ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "pin_attempts_service_role"
   ON pin_attempts FOR ALL
+  TO service_role
   USING (true)
   WITH CHECK (true);
 
