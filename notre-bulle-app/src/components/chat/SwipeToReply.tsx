@@ -1,6 +1,7 @@
 // ============================================================
 // SwipeToReply — Balayer un message vers la gauche pour répondre
 // Comme WhatsApp : swipe → icône Répondre → tap ou relâchement
+// Fonctionne sur TOUS les messages (les siens et ceux du partenaire)
 // Design Burgundy & Gold, animations spring
 // ============================================================
 import { View, Text, StyleSheet } from 'react-native';
@@ -18,9 +19,11 @@ import { colors, spacing, borderRadius, typography } from '../../constants/theme
 interface SwipeToReplyProps {
   children: React.ReactNode;
   onReply: () => void;
+  /** Autoriser le swipe sur ses propres messages (défaut: true) */
+  allowSelf?: boolean;
 }
 
-const SWIPE_THRESHOLD = -60; // px — distance de swipe pour déclencher
+const SWIPE_THRESHOLD = -50; // px — distance de swipe pour déclencher
 
 export function SwipeToReply({ children, onReply }: SwipeToReplyProps) {
   const translateX = useSharedValue(0);
@@ -28,9 +31,9 @@ export function SwipeToReply({ children, onReply }: SwipeToReplyProps) {
   const buttonOpacity = useSharedValue(0);
 
   const gesture = Gesture.Pan()
-    .minDistance(10)
-    .activeOffsetX(-10) // seulement les swipes vers la gauche
-    .failOffsetY([-40, 40]) // annule si trop vertical (plus tolérant pour FlatList scroll)
+    .minDistance(8)
+    .activeOffsetX([-8, Infinity]) // active immédiatement vers la gauche
+    .failOffsetY([-50, 50]) // plus tolérant pour le scroll FlatList
     .onUpdate((e) => {
       // Limiter l'étendue du swipe
       const limited = Math.max(e.translationX, -120);

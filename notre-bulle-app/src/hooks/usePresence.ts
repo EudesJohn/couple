@@ -1,3 +1,9 @@
+// ============================================================
+// Hook — Présence en ligne (temps réel)
+// Suit l'état online/offline + frappe du partenaire
+// Charge le partenaire via getActualPartnerProfileId (même mapping
+// que le reste de l'app, pas juste .neq('id', me.id))
+// ============================================================
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import type { Presence } from '../types/database';
@@ -37,29 +43,47 @@ export function usePresence(): UsePresenceReturn {
 
   // S'abonner à la présence de l'autre
   useEffect(() => {
-    // Récupérer l'ID de l'autre personne
     const getPartner = async () => {
       const me = await getCurrentProfile();
       if (!me) return;
 
-      const { data: allProfiles } = await supabase
-        .from('profiles')
-        .select('id')
-        .neq('id', me.id);
+      // Utiliser getActualPartnerProfileId pour trouver le vrai partenaire
+      const { getActualPartnerProfileId } = await import('../lib/profile');
+      const partnerId = await getActualPartnerProfileId();
+      if (!partnerId) {
+        console.warn('[Presence] Pas de partenaire trouvé');
+        return;
+      }
 
-      const partnerId = allProfiles?.[0]?.id;
-      if (!partnerId) return;
+      console.log('[Presence] Partenaire:', partnerId);
+
+      // S'assurer que le partenaire a une row presence
+      await supabase
+        .from('presence')
+        .upsert({
+          profile_id: partnerId,
+          is_online: false,
+          is_typing: false,
+          last_seen_at: new Date().toISOString(),
+        }, { onConflict: 'profile_id' })
+        .then(() => {}, () => {});
 
       // Charger l'état initial
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('presence')
         .select('*')
         .eq('profile_id', partnerId)
-        .single();
+        .maybeSingle();
 
-      if (data) setPartnerPresence(data);
+      if (data) {
+        console.log('[Presence] État initial:', data.is_online, data.last_seen_at);
+        setPartnerPresence(data);
+      } else {
+        console.log('[Presence] Pas de row, état par défaut (hors ligne)');
+        setPartnerPresence({ profile_id: partnerId, is_online: false, is_typing: false, last_seen_at: new Date().toISOString() });
+      }
 
-      // Écouter les changements Realtime (nom unique par mount)
+      // Écouter les changements Realtime
       const channel = supabase
         .channel(`presence:partner:${Date.now()}`)
         .on(
@@ -71,10 +95,13 @@ export function usePresence(): UsePresenceReturn {
             filter: `profile_id=eq.${partnerId}`,
           },
           (payload) => {
+            console.log('[Presence] Changement Realtime:', payload.eventType, payload.new);
             setPartnerPresence(payload.new as Presence);
           }
         )
-        .subscribe();
+        .subscribe((status) => {
+          console.log('[Presence] Subscription:', status);
+        });
 
       return channel;
     };
@@ -106,7 +133,7 @@ export function usePresence(): UsePresenceReturn {
         is_online: true,
         last_seen_at: new Date().toISOString(),
       })
-      .then(() => {});
+      .then(() => {}, () => {});
 
     // Auto-reset après 3s sans frappe
     if (typing) {
@@ -121,7 +148,7 @@ export function usePresence(): UsePresenceReturn {
             is_online: true,
             last_seen_at: new Date().toISOString(),
           })
-          .then(() => {});
+          .then(() => {}, () => {});
       }, 3000);
     }
   }, []);
