@@ -16,11 +16,23 @@ export function usePresence(): UsePresenceReturn {
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const profileIdRef = useRef<string | null>(null);
 
-  // Récupérer son propre profile_id
+  // Récupérer son propre profile_id et s'enregistrer en ligne
   useEffect(() => {
     getCurrentProfile().then((profile) => {
-      if (profile) profileIdRef.current = profile.id;
-    });
+      if (profile) {
+        profileIdRef.current = profile.id;
+        // S'enregistrer en ligne au démarrage
+        supabase
+          .from('presence')
+          .upsert({
+            profile_id: profile.id,
+            is_online: true,
+            is_typing: false,
+            last_seen_at: new Date().toISOString(),
+          })
+          .then(() => {}, () => {});
+      }
+    }).catch(() => {});
   }, []);
 
   // S'abonner à la présence de l'autre

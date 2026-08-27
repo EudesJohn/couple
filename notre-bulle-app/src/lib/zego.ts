@@ -190,6 +190,17 @@ class WebRTCManager {
         if (!webrtcNativeAvailable || !NativeRTC?.mediaDevices) {
           throw new Error('react-native-webrtc mediaDevices non disponible');
         }
+        // Demander les permissions AVANT getUserMedia
+        try {
+          const RN = await import('react-native');
+          if (RN.PermissionsAndroid) {
+            const perms: any[] = ['android.permission.RECORD_AUDIO'];
+            if (video) perms.push('android.permission.CAMERA');
+            const granted = await RN.PermissionsAndroid.requestMultiple(perms);
+            const allGranted = Object.values(granted).every((v: any) => v === 'granted');
+            if (!allGranted) console.warn('[WebRTC] Permissions non accordees:', granted);
+          }
+        } catch {}
         try {
           this.localStream = await NativeRTC.mediaDevices.getUserMedia({
             audio: true,

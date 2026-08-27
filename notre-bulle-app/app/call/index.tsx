@@ -258,15 +258,17 @@ export default function CallScreen() {
     return () => setOnRemoteStreamReady(null);
   }, []);
 
-  // Web: attacher les flux vidéo aux éléments <video>
+  // Polling des flux WebRTC — web ET mobile (flux local = caméra aperçu)
   useEffect(() => {
-    if (!isWeb) return;
     const interval = setInterval(() => {
-      const streams = getWebRTCStreams();
-      if (streams.local !== webRTCStreams.local || streams.remote !== webRTCStreams.remote) {
-        setWebRTCStreams({ local: streams.local, remote: streams.remote });
-      }
-    }, 500);
+      try {
+        const streams = getWebRTCStreams();
+        setWebRTCStreams((prev) => {
+          if (streams.local === prev.local && streams.remote === prev.remote) return prev;
+          return { local: streams.local, remote: streams.remote };
+        });
+      } catch {}
+    }, 300);
     return () => clearInterval(interval);
   }, []);
 

@@ -16,7 +16,7 @@ import type { MessageWithDetails } from '../../types/database';
 
 interface ChatInputProps {
   onSendText: (text: string) => void;
-  onSendVoice: (uri: string, durationMs: number) => void;
+  onSendVoice: (uri: string, durationMs: number, mimeType?: string) => void;
   onSendImage: () => void;
   onTakePhoto: () => void;
   onSendVideo?: () => void;
@@ -121,12 +121,15 @@ export function ChatInput({
   // ==========================================
   // VOIX
   // ==========================================
+  const [recordedMime, setRecordedMime] = useState<string>('audio/webm');
+
   const handleMicPress = useCallback(async () => {
     if (isRecording) {
       const result = await stopRecording();
       if (result) {
         setRecordedUri(result.uri);
         setRecordedDuration(result.durationMs);
+        setRecordedMime(result.mimeType || 'audio/m4a');
       }
     } else {
       setRecordedUri(null);
@@ -143,11 +146,11 @@ export function ChatInput({
 
   const handleSendRecordedVoice = useCallback(() => {
     if (recordedUri && recordedDuration > 0) {
-      onSendVoice(recordedUri, recordedDuration);
+      onSendVoice(recordedUri, recordedDuration, recordedMime);
       setRecordedUri(null);
       setRecordedDuration(0);
     }
-  }, [recordedUri, recordedDuration, onSendVoice]);
+  }, [recordedUri, recordedDuration, recordedMime, onSendVoice]);
 
   // Mode enregistrement vocal
   if (showRecorder) {

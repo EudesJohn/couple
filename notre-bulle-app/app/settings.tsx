@@ -21,8 +21,8 @@ import { colors, typography, spacing, borderRadius } from '../src/constants/them
 import { supabase } from '../src/lib/supabase';
 import { useAuth } from '../src/hooks/useAuth';
 import { getOwnProfileId, getActualPartnerProfileId } from '../src/lib/profile';
-import { saveTheme, saveBackgroundImage, removeBackgroundImage, getSetting, setSetting, type ChatTheme } from '../src/lib/settings';
-import { compressImage } from '../src/lib/media';
+import { saveTheme, getTheme, saveBackgroundImage, removeBackgroundImage, getSetting, setSetting, type ChatTheme } from '../src/lib/settings';
+import { compressImage, getSignedMediaUrl } from '../src/lib/media';
 import {
   RINGTONES, DEFAULT_RINGTONE, isCustomMusic, getStoredRingtone,
   applyRingtone, playRingtoneLoop,
@@ -361,6 +361,18 @@ export default function SettingsScreen() {
   const [selectedTheme, setSelectedTheme] = useState(0);
   const [bgPreview, setBgPreview] = useState<string | null>(null);
 
+  // Charger le thème sauvegardé au démarrage
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await getTheme();
+        const idx = THEMES.findIndex(t => t.bg === saved.bg && t.bubbleSelf === saved.bubbleSelf);
+        if (idx >= 0) setSelectedTheme(idx);
+        if (saved.backgroundImage) setBgPreview(saved.backgroundImage);
+      } catch {}
+    })();
+  }, []);
+
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [savingPseudo, setSavingPseudo] = useState(false);
@@ -420,7 +432,14 @@ export default function SettingsScreen() {
       if (profile) {
         setDisplayName(profile.display_name);
         setNewDisplayName(profile.display_name);
-        setAvatar(profile.avatar_url);
+        if (profile.avatar_url) {
+          try {
+            const url = await getSignedMediaUrl(profile.avatar_url);
+            setAvatar(url);
+          } catch {
+            setAvatar(profile.avatar_url);
+          }
+        }
       }
     })();
   }, [getPartnerId]);

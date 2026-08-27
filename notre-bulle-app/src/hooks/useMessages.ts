@@ -23,7 +23,7 @@ let msgMountId = 0;
 interface UseMessagesReturn {
   messages: MessageWithDetails[];
   sendText: (content: string, replyToId?: string) => Promise<void>;
-  sendVoice: (uri: string, durationMs: number) => Promise<void>;
+  sendVoice: (uri: string, durationMs: number, mimeType?: string) => Promise<void>;
   sendImage: (uri: string, mimeType: string, width: number, height: number) => Promise<void>;
   refreshMessages: () => Promise<void>;
   isLoading: boolean;
@@ -496,10 +496,11 @@ export function useMessages(): UseMessagesReturn {
     await createMessage('text', content, undefined, replyToId);
   }, [createMessage]);
 
-  const sendVoice = useCallback(async (uri: string, durationMs: number) => {
+  const sendVoice = useCallback(async (uri: string, durationMs: number, mimeOverride?: string) => {
     try {
-      const result = await uploadMedia('VOICE_NOTES', uri, 'audio/webm');
-      await createMessage('voice', null, { storage_path: result.path, mime_type: 'audio/webm', duration_ms: durationMs });
+      const mime = mimeOverride || (uri.endsWith('.m4a') ? 'audio/m4a' : 'audio/webm');
+      const result = await uploadMedia('VOICE_NOTES', uri, mime);
+      await createMessage('voice', null, { storage_path: result.path, mime_type: mime, duration_ms: durationMs });
     } catch (err) { console.error('Erreur envoi vocal:', err); }
   }, [createMessage]);
 

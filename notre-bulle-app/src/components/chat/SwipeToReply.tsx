@@ -30,7 +30,7 @@ export function SwipeToReply({ children, onReply }: SwipeToReplyProps) {
   const gesture = Gesture.Pan()
     .minDistance(10)
     .activeOffsetX(-10) // seulement les swipes vers la gauche
-    .failOffsetY([-15, 15]) // annule si trop vertical
+    .failOffsetY([-40, 40]) // annule si trop vertical (plus tolérant pour FlatList scroll)
     .onUpdate((e) => {
       // Limiter l'étendue du swipe
       const limited = Math.max(e.translationX, -120);

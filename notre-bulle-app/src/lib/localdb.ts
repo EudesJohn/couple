@@ -6,6 +6,8 @@ import type { MessageWithDetails, Message, Attachment, MessageStatus } from '../
 
 let db: any = null;
 let isWeb = false;
+let dbReadyResolve: (() => void) | null = null;
+export const dbReady = new Promise<void>((resolve) => { dbReadyResolve = resolve; });
 
 // Vérifier si on est sur le web
 try {
@@ -78,8 +80,10 @@ export async function initDatabase(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_status_msg ON message_status(message_id);
     `);
     console.log('✅ Base locale initialisée');
+    dbReadyResolve?.();
   } catch (err) {
     console.warn('⚠️ SQLite indisponible, cache désactivé:', err);
+    dbReadyResolve?.();
   }
 }
 

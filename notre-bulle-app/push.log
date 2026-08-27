@@ -1,0 +1,6 @@
+remote: warning: See https://gh.io/lfs for more information.        
+remote: warning: File e0dbef15b7230b8a80ae21597b645e69ee48de31 is 72.46 MB; this is larger than GitHub's recommended maximum file size of 50.00 MB        
+remote: warning: GH001: Large files detected. You may want to try Git Large File Storage - https://git-lfs.github.com.        
+To https://github.com/EudesJohn/couple.git
+ ! [remote rejected] main -> main (cannot lock ref 'refs/heads/main': is at ebd45d7ecc80f382f394ae7c66b58719b0a289bb but expected 9d37864d72fd4bbf2806f69ebd8db8f997e54c0a)
+error: failed to push some refs to 'https://github.com/EudesJohn/couple.git'
