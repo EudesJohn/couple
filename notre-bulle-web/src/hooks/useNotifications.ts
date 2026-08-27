@@ -7,6 +7,7 @@ import { useEffect, useRef } from 'react';
 import { playMessageSound, startRingtone, playCallEndSound } from '../lib/sounds';
 import { config } from '../constants/config';
 import { getOwnProfileId } from '../lib/profile';
+import { supabase } from '../lib/supabase';
 
 // ==========================================
 // UTILITAIRE : VAPID public key → Uint8Array
@@ -160,9 +161,11 @@ async function _registerPushInner(): Promise<boolean> {
 async function _syncSubscription(profileId: string, subscription: PushSubscription): Promise<boolean> {
   try {
     const subData = subscription.toJSON();
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
     const response = await fetch(`${apiBase()}/push/subscribe`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
       body: JSON.stringify({
         profile_id: profileId,
         endpoint: subData.endpoint,
@@ -195,9 +198,11 @@ export async function triggerPushNotification(
   data?: Record<string, unknown>,
 ): Promise<boolean> {
   try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
     const response = await fetch(`${apiBase()}/push/notify`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
       body: JSON.stringify({
         recipient_profile_id: recipientProfileId,
         title,
