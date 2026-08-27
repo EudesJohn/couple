@@ -233,7 +233,11 @@ export default function CallScreen() {
         if (!pid) return;
         const { supabase } = await import('../../src/lib/supabase');
         const { data } = await supabase.from('profiles').select('avatar_url').eq('id', pid).single();
-        if (data?.avatar_url) setPartnerAvatar(data.avatar_url);
+        if (data?.avatar_url) {
+          const { getSignedMediaUrl } = await import('../../src/lib/media');
+          const url = await getSignedMediaUrl(data.avatar_url);
+          setPartnerAvatar(url);
+        }
       } catch {}
     })();
   }, []);

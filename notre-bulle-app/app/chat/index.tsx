@@ -3,7 +3,7 @@
 // Reply-to (Swipe), fond d'écran personnalisé, thème dynamique
 // ============================================================
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
-import { View, Text, FlatList, StyleSheet, KeyboardAvoidingView, Platform, Image, RefreshControl } from 'react-native';
+import { View, Text, FlatList, StyleSheet, KeyboardAvoidingView, Platform, Image, RefreshControl, TouchableOpacity } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { colors as staticColors, typography, spacing } from '../../src/constants/theme';
 import { MessageBubble } from '../../src/components/chat/MessageBubble';
@@ -53,6 +53,7 @@ export default function ChatScreen() {
   const [bgImage, setBgImage] = useState<string | null>(null);
   const [replyTarget, setReplyTarget] = useState<MessageWithDetails | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [viewingImage, setViewingImage] = useState<string | null>(null);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -108,6 +109,15 @@ export default function ChatScreen() {
     setReplyTarget(null);
   }, []);
 
+  // --- IMAGE VIEWER ---
+  const handleImageClick = useCallback((storagePath: string) => {
+    // Chercher l'URL signée dans la bulle (via useMediaUrl)
+    // On ouvre directement avec le media URL
+    import('../../src/lib/media').then(({ getSignedMediaUrl }) => {
+      getSignedMediaUrl(storagePath).then(setViewingImage);
+    });
+  }, []);
+
   // --- HANDLERS D'ENVOI ---
   const handleSendText = useCallback((text: string) => {
     const replyToId = replyTarget?.id || undefined;
@@ -150,6 +160,7 @@ export default function ChatScreen() {
           myProfileId={myProfileId}
           bubbleSelfColor={bubbleSelf}
           bubbleOtherColor={bubbleOther}
+          onImageClick={handleImageClick}
         />
       );
       return (
@@ -185,7 +196,7 @@ export default function ChatScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: bg }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {/* Fond d'écran personnalisé */}
@@ -254,6 +265,29 @@ export default function ChatScreen() {
         replyTo={replyTarget}
         onCancelReply={handleCancelReply}
       />
+
+      {/* Image viewer plein écran */}
+      {viewingImage && (
+        <View style={{
+          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.95)',
+          zIndex: 9999,
+          justifyContent: 'center', alignItems: 'center',
+        }}>
+          <TouchableOpacity
+            style={{ position: 'absolute', top: 40, right: 20, zIndex: 10, padding: 10 }}
+            onPress={() => setViewingImage(null)}
+            activeOpacity={0.7}
+          >
+            <Text style={{ color: '#FAFAF9', fontSize: 28, fontWeight: '300' }}>×</Text>
+          </TouchableOpacity>
+          <Image
+            source={{ uri: viewingImage }}
+            style={{ width: '95%', height: '85%', borderRadius: 12 }}
+            resizeMode="contain"
+          />
+        </View>
+      )}
     </KeyboardAvoidingView>
   );
 }

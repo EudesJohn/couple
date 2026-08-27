@@ -17,6 +17,17 @@ import { PhoneIcon, SettingsIcon, HeartFilledIcon, ImageIcon, HistoryIcon, Cycle
 import { CallTypeSheet } from '../../src/components/call/CallTypeSheet';
 import { MoreMenu } from '../../src/components/ui/MoreMenu';
 
+function formatTimeSince(isoDate: string): string {
+  const diff = Date.now() - new Date(isoDate).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'A l instant';
+  if (mins < 60) return `Il y a ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `Il y a ${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `Il y a ${days}j`;
+}
+
 function ChatHeader() {
   const insets = useSafeAreaInsets();
   const { isPartnerOnline, partnerPresence } = usePresence();
@@ -60,6 +71,9 @@ function ChatHeader() {
   }, [identity]);
 
   const partnerName = partnerDisplayName || FALLBACK_NAME;
+  const partnerLastSeen = !isPartnerOnline && partnerPresence?.last_seen_at
+    ? formatTimeSince(partnerPresence.last_seen_at)
+    : 'Hors ligne';
 
   const handleCallPress = () => setCallSheetVisible(true);
 
@@ -111,7 +125,7 @@ function ChatHeader() {
               fontSize: 12, fontWeight: '500',
               color: isPartnerOnline ? colors.online : colors.textTertiary,
             }}>
-              {isTyping ? 'Écrit...' : isPartnerOnline ? 'En ligne' : 'Hors ligne'}
+              {isTyping ? 'Écrit...' : isPartnerOnline ? 'En ligne' : partnerLastSeen}
             </Text>
           </View>
         </View>
