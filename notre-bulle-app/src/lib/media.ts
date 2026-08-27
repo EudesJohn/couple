@@ -142,7 +142,11 @@ export function getMediaUrl(path: string): string {
 /** Version async — retourne une signed URL (fonctionne avec RLS). */
 export async function getSignedMediaUrl(path: string): Promise<string> {
   const bucket = BUCKETS[path.split('/')[0] as keyof typeof BUCKETS] || path.split('/')[0];
-  const filePath = path.includes('/') ? path.split('/').slice(1).join('/') : path;
+  // ⚠️ Convention du projet (web + mobile) : le path stocké en DB contient
+  // le préfixe bucket (ex: "media/abc.jpg") ET l'upload se fait avec ce même
+  // path complet → l'objet vit à "media/abc.jpg" DANS le bucket "media".
+  // createSignedUrl reçoit donc le path COMPLET, comme getPublicUrl côté web.
+  const filePath = path;
 
   // Vérifier le cache
   const cached = signedUrlCache.get(path);

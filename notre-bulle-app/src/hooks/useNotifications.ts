@@ -171,6 +171,60 @@ export async function requestNotificationPermission(): Promise<boolean> {
 }
 
 // ==========================================
+// PUSH REMOTE (app fermée) — token Expo
+// ==========================================
+// Enregistre le token Expo du téléphone dans push_subscriptions pour que
+// le serveur (webhook Supabase → /api/push/on-*) puisse envoyer une
+// notification même quand l'app est complètement fermée.
+let lastToken: string | null = null;
+
+export async function registerExpoPushToken(profileId: string): Promise<void> {
+  if (isWeb) return;
+
+  const N = await getMobileNotifications();
+  if (!N || typeof N.getExpoPushTokenAsync !== 'function') return;
+
+  try {
+    const permission = await N.getPermissionsAsync();
+    if (permission.status !== 'granted') {
+      const req = await N.requestPermissionsAsync();
+      if (req.status !== 'granted') return;
+    }
+
+    const { data: tokenData } = await N.getExpoPushTokenAsync();
+    const token = tokenData;
+    if (!token || lastToken === token) return;
+
+    const { supabase } = await import('../lib/supabase');
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) return;
+
+    // Upsert : endpoint = token Expo, clés vides (non utilisées par Expo)
+    const { error } = await supabase
+      .from('push_subscriptions' as any)
+      .upsert(
+        {
+          profile_id: profileId,
+          endpoint: token,
+          p256dh_key: '',
+          auth_key: '',
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'profile_id,endpoint' }
+      );
+
+    if (error) {
+      console.warn('⚠️ Enregistrement token push:', error.message);
+      return;
+    }
+    lastToken = token;
+    console.log('📱 Token push Expo enregistre');
+  } catch (err) {
+    console.warn('⚠️ registerExpoPushToken:', err);
+  }
+}
+
+// ==========================================
 // AFFICHAGE DES NOTIFICATIONS
 // ==========================================
 export async function notifyNewMessage(

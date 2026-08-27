@@ -247,6 +247,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('locked');
   }, []);
 
+  // ─── Enregistrement du token push Expo (notifications app fermee) ───
+  useEffect(() => {
+    if (status !== 'unlocked') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getOwnProfileId } = await import('../lib/profile');
+        const profileId = await getOwnProfileId();
+        if (!profileId || cancelled) return;
+        const { registerExpoPushToken } = await import('./useNotifications');
+        await registerExpoPushToken(profileId);
+      } catch (err) {
+        console.warn('⚠️ Push token:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [status]);
+
   return (
     <AuthContext.Provider value={      { status, identity, isLocked: status === 'loading' || status === 'locked',
       isFirstLaunch: status === 'onboarding' || status === 'setupPin',
