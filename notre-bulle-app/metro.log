@@ -1,0 +1,46 @@
+Starting project at D:\Couple\notre-bulle-app
+Starting Metro Bundler
+
+warning: Bundler cache is empty, rebuilding (this may take a minute)
+Waiting on http://localhost:8081
+
+An update for expo is available: 57.0.16 → ~57.0.17
+13 other packages may need updating. Run npx expo install --check for details.
+Logs for your project will appear below.
+Android Bundled 85550ms node_modules\expo-router\entry.js (2101 modules)
+ WARN  [WebRTC] react-native-webrtc indisponible (Expo Go?) - appels desactives: [Error: WebRTC native module not found.
+Try executing the "npm install" command inside your projects folder.]
+Android Bundled 16942ms src\lib\auth.ts (1078 modules)
+Android Bundled 20615ms node_modules\expo-notifications\build\index.js (1025 modules)
+Android Bundled 20809ms node_modules\expo-secure-store\build\SecureStore.js (1034 modules)
+Android Bundled 21034ms node_modules\expo-sqlite\build\index.js (1126 modules)
+ LOG  ✅ Base locale initialisée
+ LOG  ✅ Base locale initialisée
+ ERROR  [Error: expo-notifications: Android Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go with the release of SDK 53. Use a development build instead of Expo Go. Learn more at https://docs.expo.dev/develop/development-builds/introduction/.] 
+
+Call Stack
+  warnOfExpoGoPushUsage (node_modules\expo-notifications\build\warnOfExpoGoPushUsage.js:8:28)
+  addPushTokenListener (node_modules\expo-notifications\build\TokenEmitter.js:33:26)
+  <global> (node_modules\expo-notifications\build\DevicePushTokenAutoRegistration.fx.js:78:25)
+  loadModuleImplementation (node_modules\@expo\cli\build\metro-require\require.js:248:43)
+  guardedLoadModule (node_modules\@expo\cli\build\metro-require\require.js:163:40)
+  metroRequire (node_modules\@expo\cli\build\metro-require\require.js:74:92)
+  <global> (node_modules\expo-notifications\build\getExpoPushTokenAsync.js:4)
+  loadModuleImplementation (node_modules\@expo\cli\build\metro-require\require.js:248:43)
+  guardedLoadModule (node_modules\@expo\cli\build\metro-require\require.js:163:40)
+  metroRequire (node_modules\@expo\cli\build\metro-require\require.js:74:92)
+  <global> (node_modules\expo-notifications\build\index.js:12)
+  loadModuleImplementation (node_modules\@expo\cli\build\metro-require\require.js:248:43)
+  guardedLoadModule (node_modules\@expo\cli\build\metro-require\require.js:156:51)
+  metroRequire (node_modules\@expo\cli\build\metro-require\require.js:74:92)
+  metroImportAll (node_modules\@expo\cli\build\metro-require\require.js:102:33)
+  importAll (node_modules\expo\src\async-require\asyncRequireModule.ts:70:73)
+  tryCallOne (address at (InternalBytecode.js:1:1296)
+  anonymous (address at (InternalBytecode.js:1:4984)
+Android Bundled 4324ms node_modules\expo-local-authentication\build\LocalAuthentication.js (1035 modules)
+Android Bundled 3813ms src\lib\profile.ts (1108 modules)
+ LOG  🔗 Auto-unlock: re-link profile...
+ LOG  🔗 linkProfileToAuth — profileId: 0edca7b6-262c-4c0b-b638-a061c937536c
+ LOG  🔗 linkProfileToAuth — auth user: cc6f34a6-0ac1-49e3-b860-5ec7d80eb759
+ LOG  🔗 Lien profile→auth reussi ✅
+Android Bundled 2532ms src\lib\settings.ts (1001 modules)

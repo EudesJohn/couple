@@ -20,14 +20,42 @@ CREATE INDEX IF NOT EXISTS idx_cycle_entries_profile_date
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cycle_entries_unique_day
   ON cycle_entries(profile_id, event_date, event_type);
 
--- ⚠️ RLS désactivé car l'app utilise l'authentification PIN (localStorage),
--- pas Supabase Auth. auth.uid() ne correspond à aucun profil.
--- La sécurité est gérée au niveau applicatif via le PIN.
-ALTER TABLE cycle_entries DISABLE ROW LEVEL SECURITY;
+-- ============================================================
+-- RLS SÉCURISÉ sur cycle_entries
+--
+-- ⚠️ SÉCURITÉ : RLS était DÉSACTIVÉ → lecture totale de vos
+-- données de cycle menstruel par n'importe qui avec la clé anon.
+-- On active maintenant RLS avec des policies basées sur auth.uid().
+-- ============================================================
 
--- ============================================================
--- Même chose pour profiles : le template Supabase par défaut a RLS
--- activé avec UPDATE USING (auth.uid() = id), ce qui bloque
--- silencieusement les mises à jour (0 lignes affectées, pas d'erreur).
--- ============================================================
-ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;
+ALTER TABLE cycle_entries ENABLE ROW LEVEL SECURITY;
+
+-- Helper is_authorized_profile() doit exister (voir schema principal)
+-- Si elle n'existe pas, la créer :
+CREATE OR REPLACE FUNCTION public.is_authorized_profile()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM profiles
+    WHERE auth_user_id = auth.uid()
+  );
+$$;
+
+-- SELECT : les deux membres du couple voient les données de cycle
+CREATE POLICY "cycle_select_authorized" ON cycle_entries
+  FOR SELECT USING (is_authorized_profile());
+
+-- INSERT : un membre du couple peut ajouter des entrées
+CREATE POLICY "cycle_insert_authorized" ON cycle_entries
+  FOR INSERT WITH CHECK (is_authorized_profile());
+
+-- UPDATE : un membre du couple peut modifier ses entrées
+CREATE POLICY "cycle_update_authorized" ON cycle_entries
+  FOR UPDATE USING (is_authorized_profile());
+
+-- DELETE : un membre du couple peut supprimer ses entrées
+CREATE POLICY "cycle_delete_authorized" ON cycle_entries
+  FOR DELETE USING (is_authorized_profile());

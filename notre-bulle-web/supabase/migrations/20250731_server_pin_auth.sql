@@ -35,8 +35,33 @@ revoke update (pin_hash) on public.profiles from anon;
 revoke select (pin_hash) on public.profiles from authenticated;
 revoke update (pin_hash) on public.profiles from authenticated;
 
--- 3. pgcrypto pour le SHA-256 (même sel que l'ancien code client)
+-- 3. pgcrypto pour le hashing (bcrypt pour PIN + SHA-256 legacy)
 create extension if not exists pgcrypto;
+
+-- ⚠️ SÉCURITÉ : migration de SHA-256 vers bcrypt
+-- SHA-256 est vulnérable au brute-force (10 000 combinaisons = instantané)
+-- bcrypt avec un sel aléatoire rend le crack quasi impossible
+-- Fonction de migration : convertit un hash SHA-256 existant en bcrypt
+create or replace function public.migrate_pin_to_bcrypt(p_profile_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+begin
+  -- Ne fait rien si le hash est déjà en bcrypt (commence par '$2')
+  if exists (
+    SELECT 1 FROM public.profiles p
+    WHERE p.id = p_profile_id
+      AND p.pin_hash IS NOT NULL
+      AND p.pin_hash LIKE '$2%'
+  ) then
+    return;
+  end if;
+  -- Note: la migration réelle nécessite de connaître le PIN
+  -- Elle est faite lors du prochain login成功
+end;
+$$;
 
 -- 4. Table de session par profil — l'epoch est incrémenté à chaque
 --    connexion réussie (login / création / changement de PIN).
@@ -68,29 +93,42 @@ $$;
 
 -- verify_couple_pin : vérifie un PIN (utilisé par Réglages avant
 -- de proposer un nouveau code). Ne renvoie jamais le hash.
+-- ⚠️ SÉCURITÉ : supporte bcrypt (nouveau) ET SHA-256 (legacy)
 create or replace function public.verify_couple_pin(p_profile_id uuid, p_pin text)
 returns table(ok boolean)
 language plpgsql
 security definer
 set search_path = public, extensions
 as $$
+  v_hash text;
 begin
   if p_pin is null or char_length(p_pin) <> 4 then
     return query select false;
     return;
   end if;
 
+  SELECT pin_hash INTO v_hash FROM public.profiles WHERE id = p_profile_id;
+
+  if v_hash is null then
+    return query select false;
+    return;
+  end if;
+
+  -- Nouveau format bcrypt (commence par $2)
+  if v_hash LIKE '$2%' then
+    return query SELECT (crypt(p_pin, v_hash) = v_hash);
+    return;
+  end if;
+
+  -- Legacy SHA-256 (pour transition)
   return query
-  select coalesce(
-    (select p.pin_hash = encode(digest('notre-bulle-salt-' || p_pin, 'sha256'), 'hex')
-       from public.profiles p
-      where p.id = p_profile_id and p.pin_hash is not null),
-    false) as ok;
+  SELECT (v_hash = encode(digest('notre-bulle-salt-' || p_pin, 'sha256'), 'hex'));
 end;
 $$;
 
 -- set_couple_pin : bootstrap — crée le PIN UNIQUEMENT si aucun
 -- n'existe pour ce profil. Incrémente l'epoch (1er appareil = epoch 1).
+-- ⚠️ SÉCURITÉ : utilise bcrypt au lieu de SHA-256
 create or replace function public.set_couple_pin(p_profile_id uuid, p_pin text)
 returns table(ok boolean, session_epoch int)
 language plpgsql
@@ -99,6 +137,7 @@ set search_path = public, extensions
 as $$
 declare
   new_epoch int;
+  new_hash  text;
 begin
   if p_pin is null or char_length(p_pin) <> 4 then
     return query select false, 0;
@@ -111,8 +150,11 @@ begin
     return;
   end if;
 
+  -- ⚠️ BCRYPT : sel aléatoire + 12 rounds de cost
+  new_hash := crypt(p_pin, gen_salt('bf', 12));
+
   update public.profiles p
-     set pin_hash    = encode(digest('notre-bulle-salt-' || p_pin, 'sha256'), 'hex'),
+     set pin_hash    = new_hash,
          updated_at  = now()
    where p.id = p_profile_id;
 
@@ -134,6 +176,7 @@ $$;
 
 -- login_couple_pin : vérifie le PIN ET force la déconnexion des
 -- autres appareils de ce profil (incrémentation de l'epoch).
+-- ⚠️ SÉCURITÉ : supporte bcrypt (nouveau) ET SHA-256 (legacy)
 create or replace function public.login_couple_pin(p_profile_id uuid, p_pin text)
 returns table(ok boolean, session_epoch int)
 language plpgsql
@@ -141,14 +184,29 @@ security definer
 set search_path = public, extensions
 as $$
 declare
-  valid    boolean;
+  v_hash    text;
+  valid     boolean := false;
   new_epoch int;
 begin
-  select coalesce(
-    (select p.pin_hash = encode(digest('notre-bulle-salt-' || p_pin, 'sha256'), 'hex')
-       from public.profiles p
-      where p.id = p_profile_id and p.pin_hash is not null),
-    false) into valid;
+  SELECT pin_hash INTO v_hash FROM public.profiles WHERE id = p_profile_id;
+
+  if v_hash is null then
+    return query select false, 0;
+    return;
+  end if;
+
+  -- Nouveau format bcrypt
+  if v_hash LIKE '$2%' then
+    valid := (crypt(p_pin, v_hash) = v_hash);
+  else
+    -- Legacy SHA-256
+    valid := (v_hash = encode(digest('notre-bulle-salt-' || p_pin, 'sha256'), 'hex'));
+    -- Migration automatique : si le PIN est correct en SHA-256,
+    -- on le re-hash en bcrypt pour les prochaines fois
+    if valid then
+      UPDATE public.profiles SET pin_hash = crypt(p_pin, gen_salt('bf', 12)) WHERE id = p_profile_id;
+    end if;
+  end if;
 
   if not valid then
     return query select false, 0;
@@ -168,6 +226,7 @@ $$;
 
 -- change_couple_pin : exige l'ancien PIN, fixe le nouveau, et force
 -- la reconnexion de tous les appareils de ce profil (epoch++).
+-- ⚠️ SÉCURITÉ : le nouveau PIN est hashé en bcrypt
 create or replace function public.change_couple_pin(p_profile_id uuid, p_old_pin text, p_new_pin text)
 returns table(ok boolean, session_epoch int)
 language plpgsql
@@ -175,7 +234,8 @@ security definer
 set search_path = public, extensions
 as $$
 declare
-  valid    boolean;
+  v_hash    text;
+  valid     boolean := false;
   new_epoch int;
 begin
   if p_new_pin is null or char_length(p_new_pin) <> 4 then
@@ -183,19 +243,28 @@ begin
     return;
   end if;
 
-  select coalesce(
-    (select p.pin_hash = encode(digest('notre-bulle-salt-' || p_old_pin, 'sha256'), 'hex')
-       from public.profiles p
-      where p.id = p_profile_id and p.pin_hash is not null),
-    false) into valid;
+  SELECT pin_hash INTO v_hash FROM public.profiles WHERE id = p_profile_id;
+
+  if v_hash is null then
+    return query select false, 0;
+    return;
+  end if;
+
+  -- Vérifier l'ancien PIN (supporte bcrypt + SHA-256 legacy)
+  if v_hash LIKE '$2%' then
+    valid := (crypt(p_old_pin, v_hash) = v_hash);
+  else
+    valid := (v_hash = encode(digest('notre-bulle-salt-' || p_old_pin, 'sha256'), 'hex'));
+  end if;
 
   if not valid then
     return query select false, 0;
     return;
   end if;
 
+  -- Nouveau PIN toujours en bcrypt
   update public.profiles p
-     set pin_hash    = encode(digest('notre-bulle-salt-' || p_new_pin, 'sha256'), 'hex'),
+     set pin_hash    = crypt(p_new_pin, gen_salt('bf', 12)),
          updated_at  = now()
    where p.id = p_profile_id;
 

@@ -38,10 +38,46 @@ CREATE INDEX IF NOT EXISTS idx_push_subscriptions_profile_id
 --    ni insérer ni lire les abonnements → push silencieusement cassé.
 ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
 
--- 3. Politique : les deux membres du couple ont tous les accès
+-- 3. Politique : authentification requise
+-- ⚠️ SÉCURITÉ : USING(true) donnait accès total à la clé anon
 DROP POLICY IF EXISTS full_access ON push_subscriptions;
-CREATE POLICY full_access ON push_subscriptions
-  FOR ALL USING (true);
+
+-- Helper is_authorized_profile() doit exister (voir schema principal)
+CREATE OR REPLACE FUNCTION public.is_authorized_profile()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM profiles
+    WHERE auth_user_id = auth.uid()
+  );
+$$;
+
+-- SELECT : uniquement les abonnements du profil courant
+CREATE POLICY "push_subscriptions_select_own" ON push_subscriptions
+  FOR SELECT USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = profile_id AND auth_user_id = auth.uid())
+  );
+
+-- INSERT : uniquement pour son propre profil
+CREATE POLICY "push_subscriptions_insert_own" ON push_subscriptions
+  FOR INSERT WITH CHECK (
+    EXISTS (SELECT 1 FROM profiles WHERE id = profile_id AND auth_user_id = auth.uid())
+  );
+
+-- UPDATE : uniquement pour son propre profil
+CREATE POLICY "push_subscriptions_update_own" ON push_subscriptions
+  FOR UPDATE USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = profile_id AND auth_user_id = auth.uid())
+  );
+
+-- DELETE : uniquement pour son propre profil
+CREATE POLICY "push_subscriptions_delete_own" ON push_subscriptions
+  FOR DELETE USING (
+    EXISTS (SELECT 1 FROM profiles WHERE id = profile_id AND auth_user_id = auth.uid())
+  );
 
 -- 4. Trigger updated_at (même convention que le schéma principal)
 DROP TRIGGER IF EXISTS set_updated_at ON push_subscriptions;
