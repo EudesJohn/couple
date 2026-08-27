@@ -1110,9 +1110,6 @@ async def push_notify(request: PushNotifyIn, authorization: Optional[str] = Head
     payload = await verify_supabase_token(authorization)
     if not payload:
         raise HTTPException(status_code=401, detail="Authentification requise")
-    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
-        logger.error("VAPID keys non configurées — push impossible")
-        raise HTTPException(status_code=500, detail="VAPID keys non configurées sur le serveur")
 
     # Récupérer les abonnements du destinataire
     subscriptions = await get_subscriptions(request.recipient_profile_id)
@@ -1230,11 +1227,6 @@ async def push_on_new_message(
     }
     payload_bytes = json.dumps(push_payload).encode("utf-8")
 
-    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
-        logger.error("VAPID keys non configurées — push impossible")
-        # Retourner 200 pour ne pas faire retry le webhook
-        return {"status": "ok", "sent": 0, "total": 0, "warning": "VAPID not configured"}
-
     sent_count = 0
     errors = []
 
@@ -1326,10 +1318,6 @@ async def push_on_new_call(
     }
     payload_bytes = json.dumps(push_payload).encode("utf-8")
 
-    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
-        logger.error("VAPID keys non configurées — push impossible")
-        return {"status": "ok", "sent": 0, "total": 0, "warning": "VAPID not configured"}
-
     sent_count = 0
     errors = []
 
@@ -1354,6 +1342,59 @@ async def push_on_new_call(
     }
 
 
+def is_expo_token(endpoint: str) -> bool:
+    """True si l'endpoint est un token Expo Push (app mobile)."""
+    return endpoint.startswith("ExponentPushToken[") or endpoint.startswith("ExpoPushToken[")
+
+
+async def _send_expo_push(endpoint: str, payload_bytes: bytes) -> None:
+    """
+    Envoie une notification via Expo Push Service (app mobile).
+    Le payload est du JSON : {title, body, data, sound, ...}.
+    """
+    try:
+        message = json.loads(payload_bytes.decode("utf-8"))
+    except Exception:
+        message = {"body": payload_bytes.decode("utf-8", errors="replace")}
+
+    body = message.get("body", "")
+    data = message.get("data", {})
+    title = message.get("title", "Notre Bulle")
+
+    # Sonnerie : les notifications d'appel utilisent le canal natif 'calls'
+    # (son paramétré par l'utilisateur) — on ne définit pas sound ici pour
+    # laisser le canal Android jouer la sonnerie choisie.
+    push_message = {
+        "to": endpoint,
+        "title": title,
+        "body": body,
+        "sound": "default",
+        "priority": "high",
+        "data": {
+            **data,
+            "_expo": {
+                "categoryId": "call" if data.get("screen") == "call" else None,
+            },
+        },
+    }
+    if data.get("screen") == "call":
+        push_message["channelId"] = "calls"
+    else:
+        push_message["channelId"] = "messages"
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            "https://exp.host/--/api/v2/push/send",
+            json=[push_message],
+            headers={"Content-Type": "application/json"},
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"Expo Push HTTP {resp.status_code}: {resp.text[:200]}")
+        data_resp = resp.json()
+        if data_resp.get("data") and data_resp["data"][0].get("status") == "error":
+            raise RuntimeError(data_resp["data"][0].get("message", "Expo push error"))
+
+
 async def _send_single_push(
     endpoint: str,
     p256dh_key: str,
@@ -1361,8 +1402,14 @@ async def _send_single_push(
     payload_bytes: bytes,
 ):
     """
-    Envoie une notification push via Web Push Protocol avec pywebpush.
+    Envoie une notification push.
+    - Token Expo (app mobile) → Expo Push Service
+    - Sinon (navigateur web) → Web Push Protocol avec pywebpush.
     """
+    if is_expo_token(endpoint):
+        await _send_expo_push(endpoint, payload_bytes)
+        return
+
     from pywebpush import webpush
 
     webpush(
